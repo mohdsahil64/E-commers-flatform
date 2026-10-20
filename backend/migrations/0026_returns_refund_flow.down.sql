@@ -1,0 +1,16 @@
+DROP TABLE IF EXISTS return_events;
+DROP TABLE IF EXISTS return_photos;
+
+ALTER TABLE refunds DROP COLUMN IF EXISTS method;
+ALTER TABLE refunds DROP COLUMN IF EXISTS return_id;
+ALTER TABLE refunds DROP COLUMN IF EXISTS utr;
+
+ALTER TABLE returns DROP COLUMN IF EXISTS refund_ifsc;
+ALTER TABLE returns DROP COLUMN IF EXISTS refund_acc_no;
+ALTER TABLE returns DROP COLUMN IF EXISTS refund_acc_name;
+ALTER TABLE returns DROP COLUMN IF EXISTS refund_upi;
+ALTER TABLE returns DROP COLUMN IF EXISTS refund_method;
+ALTER TABLE returns DROP COLUMN IF EXISTS reject_reason;
+ALTER TABLE returns DROP COLUMN IF EXISTS reason_code;
+
+ALTER TABLE order_items DROP COLUMN IF EXISTS delivered_at;

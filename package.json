@@ -1,0 +1,15 @@
+{
+  "name": "carlitos",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:customer": "npm run dev -w @carlitos/customer-web",
+    "dev:seller": "npm run dev -w @carlitos/seller-web",
+    "dev:admin": "npm run dev -w @carlitos/admin-web",
+    "build:all": "npm run build -w @carlitos/customer-web && npm run build -w @carlitos/seller-web && npm run build -w @carlitos/admin-web"
+  }
+}

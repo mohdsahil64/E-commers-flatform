@@ -1,0 +1,180 @@
+/* ─── Google Fonts ─────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  /* Design tokens */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.06);
+  --shadow-md: 0 4px 12px 0 rgb(0 0 0 / 0.08);
+  --shadow-lg: 0 8px 24px 0 rgb(0 0 0 / 0.1);
+  --transition-fast: 150ms ease;
+  --transition-base: 200ms ease;
+  --transition-slow: 300ms ease;
+}
+
+body {
+  @apply bg-white text-ink antialiased;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── Typography Scale ──────────────────────────────────────────── */
+.text-display   { @apply text-4xl font-semibold tracking-tight leading-tight; }
+.text-h1        { @apply text-3xl font-semibold tracking-tight leading-tight; }
+.text-h2        { @apply text-2xl font-semibold leading-snug; }
+.text-h3        { @apply text-xl font-semibold leading-snug; }
+.text-h4        { @apply text-base font-semibold; }
+.text-body      { @apply text-sm leading-relaxed; }
+.text-body-sm   { @apply text-xs leading-relaxed; }
+.text-caption   { @apply text-xs text-stone-500; }
+.text-label-sm  { @apply text-xs font-medium uppercase tracking-wide text-stone-400; }
+
+/* ─── Component Classes ─────────────────────────────────────────── */
+@layer components {
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ink focus-visible:ring-offset-2;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-white hover:bg-accent-dark active:bg-accent-dark disabled:pointer-events-none disabled:opacity-40;
+  }
+  .btn-ghost {
+    @apply btn border border-stone-300 bg-white text-ink hover:bg-stone-50 active:bg-stone-100 disabled:pointer-events-none disabled:opacity-40;
+  }
+  .btn-accent {
+    @apply btn bg-accent text-white hover:bg-accent-dark disabled:pointer-events-none disabled:opacity-40;
+  }
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700 disabled:pointer-events-none disabled:opacity-40;
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs;
+  }
+  .btn-lg {
+    @apply px-6 py-3 text-base;
+  }
+
+  /* Inputs */
+  .input {
+    @apply w-full rounded-md border border-stone-300 bg-white px-3 py-2.5 text-sm text-ink placeholder:text-stone-400 outline-none transition-colors focus:border-ink focus:ring-1 focus:ring-ink disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-400;
+  }
+  .input-error {
+    @apply border-red-400 focus:border-red-500 focus:ring-red-500;
+  }
+  .textarea {
+    @apply input resize-none;
+  }
+  .select {
+    @apply input appearance-none cursor-pointer;
+  }
+
+  /* Labels & helpers */
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-stone-700;
+  }
+  .field-error {
+    @apply mt-1 text-xs text-red-600;
+  }
+  .field-hint {
+    @apply mt-1 text-xs text-stone-500;
+  }
+
+  /* Cards */
+  .card {
+    @apply rounded-lg border border-stone-200 bg-white;
+  }
+  .card-padded {
+    @apply card p-6;
+  }
+  .card-hover {
+    @apply card transition-shadow hover:shadow-md;
+  }
+
+  /* Badges */
+  .badge {
+    @apply inline-flex items-center rounded px-2 py-0.5 text-xs font-medium;
+  }
+  .badge-gray    { @apply badge bg-stone-100 text-stone-600; }
+  .badge-green   { @apply badge bg-emerald-50 text-emerald-700; }
+  .badge-amber   { @apply badge bg-amber-50 text-amber-700; }
+  .badge-red     { @apply badge bg-red-50 text-red-700; }
+  .badge-blue    { @apply badge bg-blue-50 text-blue-700; }
+  .badge-accent  { @apply badge bg-accent-soft text-accent; }
+
+  /* Status badges */
+  .status-pending         { @apply badge-amber; }
+  .status-active          { @apply badge-green; }
+  .status-approved        { @apply badge-green; }
+  .status-rejected        { @apply badge-red; }
+  .status-suspended       { @apply badge-red; }
+  .status-blocked         { @apply badge bg-red-100 text-red-800; }
+  .status-under_review    { @apply badge-amber; }
+  .status-confirmed       { @apply badge-blue; }
+  .status-processing      { @apply badge-blue; }
+  .status-delivered       { @apply badge-green; }
+  .status-cancelled       { @apply badge-red; }
+  .status-shipped         { @apply badge-blue; }
+  .status-refunded        { @apply badge-green; }
+
+  /* Table */
+  .table-wrap { @apply w-full overflow-x-auto; }
+  .table      { @apply w-full border-collapse text-sm; }
+  .table th   { @apply border-b border-stone-200 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-stone-500; }
+  .table td   { @apply border-b border-stone-100 px-4 py-3 text-stone-700; }
+  .table tr:last-child td { @apply border-b-0; }
+  .table tbody tr { @apply hover:bg-stone-50 transition-colors; }
+
+  /* Skeleton */
+  .skeleton { @apply animate-pulse rounded bg-stone-200; }
+
+  /* Horizontal scroll without a visible scrollbar (chips, carousels). */
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+
+  /* Divider */
+  .divider { @apply border-t border-stone-200; }
+
+  /* Page containers */
+  .page-container { @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8; }
+  .section-title  { @apply text-h4 mb-4; }
+}
+
+/* ─── Scrollbar ─────────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d6d3d1 transparent;
+}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 99px; }
+
+/* ─── Focus ring ────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid #111111;
+  outline-offset: 2px;
+}
+
+/* ─── Reduced motion ────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ─── Print ─────────────────────────────────────────────────────── */
+@media print {
+  .no-print { display: none !important; }
+  .print-only { display: block !important; }
+  header, footer, aside, nav { display: none !important; }
+  body { background: white !important; color: black !important; }
+}
