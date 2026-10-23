@@ -11,10 +11,23 @@
   --shadow-md: 0 4px 12px 0 rgb(0 0 0 / 0.08);
 }
 
+html, body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   @apply bg-stone-50 text-ink antialiased;
   font-family: 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+#app {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 /* Typography */

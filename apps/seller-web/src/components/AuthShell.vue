@@ -23,7 +23,7 @@ withDefaults(defineProps<{
 </script>
 
 <template>
-  <div class="flex min-h-screen bg-white">
+  <div class="flex min-h-screen w-full max-w-full overflow-x-hidden bg-white">
     <!-- ── LEFT: cover image + dynamic copy ─────────────────── -->
     <div class="relative hidden w-1/2 overflow-hidden lg:block xl:w-[52%]">
       <img :src="coverUrl" :alt="BRAND" class="absolute inset-0 h-full w-full object-cover" />
@@ -51,7 +51,7 @@ withDefaults(defineProps<{
     </div>
 
     <!-- ── RIGHT: brand header + form ───────────────────────── -->
-    <div class="flex flex-1 flex-col overflow-y-auto">
+    <div class="flex min-w-0 flex-1 flex-col overflow-y-auto">
       <!-- Prominent brand header above the form -->
       <header class="flex items-center gap-3 border-b border-stone-100 px-5 py-4 sm:px-10 sm:py-5">
         <BrandLogo :height="36" class="sm:hidden" />

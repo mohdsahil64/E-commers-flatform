@@ -19,31 +19,31 @@ import PageBack from '@/components/PageBack.vue'
 
     <div class="grid gap-3 sm:grid-cols-2">
       <a :href="`mailto:${BUSINESS.email}`" class="card card-hover flex items-start gap-3 p-4">
-        <Mail :size="20" class="mt-0.5 text-stone-500" />
-        <span>
+        <Mail :size="20" class="mt-0.5 shrink-0 text-stone-500" />
+        <span class="min-w-0">
           <span class="block text-sm font-semibold text-ink">Email support</span>
-          <span class="block text-sm text-stone-600">{{ BUSINESS.email }}</span>
+          <span class="block break-all text-sm text-stone-600">{{ BUSINESS.email }}</span>
         </span>
       </a>
       <a :href="`tel:${BUSINESS.phoneHref}`" class="card card-hover flex items-start gap-3 p-4">
-        <Phone :size="20" class="mt-0.5 text-stone-500" />
-        <span>
+        <Phone :size="20" class="mt-0.5 shrink-0 text-stone-500" />
+        <span class="min-w-0">
           <span class="block text-sm font-semibold text-ink">Phone support</span>
-          <span class="block text-sm text-stone-600">{{ BUSINESS.phone }}</span>
+          <span class="block break-words text-sm text-stone-600">{{ BUSINESS.phone }}</span>
         </span>
       </a>
       <RouterLink to="/support" class="card card-hover flex items-start gap-3 p-4">
-        <LifeBuoy :size="20" class="mt-0.5 text-stone-500" />
-        <span>
+        <LifeBuoy :size="20" class="mt-0.5 shrink-0 text-stone-500" />
+        <span class="min-w-0">
           <span class="block text-sm font-semibold text-ink">Help Centre</span>
           <span class="block text-sm text-stone-600">Browse FAQs and self-service help.</span>
         </span>
       </RouterLink>
       <div class="card flex items-start gap-3 p-4">
-        <MapPin :size="20" class="mt-0.5 text-stone-500" />
-        <span>
+        <MapPin :size="20" class="mt-0.5 shrink-0 text-stone-500" />
+        <span class="min-w-0">
           <span class="block text-sm font-semibold text-ink">Business address</span>
-          <span class="block text-sm text-stone-600">{{ BUSINESS.addressLine }}</span>
+          <span class="block break-words text-sm text-stone-600">{{ BUSINESS.addressLine }}</span>
         </span>
       </div>
     </div>
@@ -55,8 +55,8 @@ import PageBack from '@/components/PageBack.vue'
           {{ BUSINESS.brand }} is operated by <span class="font-medium text-ink">{{ BUSINESS.legalName }}</span>
           ({{ BUSINESS.entityType }}).
         </p>
-        <ul class="mt-2 space-y-1">
-          <li><span class="font-medium text-ink">Email:</span> {{ BUSINESS.email }}</li>
+        <ul class="mt-2 space-y-1 break-words">
+          <li><span class="font-medium text-ink">Email:</span> <span class="break-all">{{ BUSINESS.email }}</span></li>
           <li><span class="font-medium text-ink">Phone:</span> {{ BUSINESS.phone }}</li>
           <li><span class="font-medium text-ink">Address:</span> {{ BUSINESS.addressLine }}</li>
         </ul>

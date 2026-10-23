@@ -120,7 +120,7 @@ watch(() => route.query.q, (q) => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-5xl">
+  <div class="mx-auto w-full min-w-0 max-w-5xl">
     <PageBack />
     <!-- Search box -->
     <div class="relative" data-search-box>

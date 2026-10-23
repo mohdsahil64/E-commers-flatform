@@ -210,7 +210,7 @@ const skeletonCards = Array.from({ length: PAGE_SIZE })
     </div>
 
     <!-- Product-type quick filters -->
-    <div class="mb-5 flex gap-2 overflow-x-auto pb-1">
+    <div class="mb-5 flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
       <button
         v-for="t in TYPE_FILTERS" :key="t.slug"
         :class="['shrink-0 rounded-full border px-3.5 py-1.5 text-sm transition-colors', activeTypeSlug === t.slug ? 'border-ink bg-ink text-white' : 'border-stone-300 text-stone-600 hover:border-stone-400']"
@@ -218,7 +218,7 @@ const skeletonCards = Array.from({ length: PAGE_SIZE })
       >{{ t.label }}</button>
     </div>
 
-    <div class="flex gap-6">
+    <div class="flex min-w-0 gap-6">
 
       <!-- ── DESKTOP FILTER SIDEBAR ─────────────────────── -->
       <aside class="hidden w-56 shrink-0 md:block" aria-label="Filters">

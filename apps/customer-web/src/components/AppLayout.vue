@@ -66,13 +66,13 @@ async function logout() {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col">
+  <div class="flex min-h-screen w-full max-w-full flex-col overflow-x-hidden">
 
     <!-- ── HEADER ─────────────────────────────────────────────── -->
     <header class="sticky top-0 z-30 border-b border-stone-200 bg-white/98 backdrop-blur-sm">
 
       <!-- Top row: logo + (desktop nav) + cart -->
-      <div class="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 sm:px-6 lg:px-8">
+      <div class="mx-auto flex w-full min-w-0 max-w-7xl items-center gap-3 px-4 py-2.5 sm:px-6 lg:px-8">
 
         <!-- Logo + wordmark (left-aligned on mobile; no hamburger) -->
         <BrandLogo size="sm" class="md:hidden" />
@@ -206,7 +206,7 @@ async function logout() {
 
     <!-- ── MAIN ───────────────────────────────────────────────── -->
     <main
-      class="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8"
+      class="mx-auto w-full min-w-0 max-w-7xl flex-1 overflow-x-hidden px-4 py-6 sm:px-6 lg:px-8"
       :class="showBottomNav ? 'pb-20 md:pb-6' : 'pb-6'"
     >
       <slot />

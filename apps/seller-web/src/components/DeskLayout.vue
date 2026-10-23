@@ -40,7 +40,7 @@ async function logout() {
 </script>
 
 <template>
-  <div class="flex min-h-screen">
+  <div class="flex min-h-screen w-full max-w-full overflow-x-hidden">
 
     <!-- ── OVERLAY (mobile) ──────────────────────────────── -->
     <transition name="overlay">
@@ -139,7 +139,7 @@ async function logout() {
       </header>
 
       <!-- Page content -->
-      <main class="flex-1 p-4 sm:p-6 lg:p-8">
+      <main class="min-w-0 flex-1 overflow-x-hidden p-4 sm:p-6 lg:p-8">
         <slot />
       </main>
     </div>

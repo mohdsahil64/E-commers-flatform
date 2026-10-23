@@ -128,6 +128,8 @@ const displayMRP   = computed(() => selectedVariant.value?.mrp ?? product.value?
 const off          = computed(() => discountPercent(displayMRP.value, displayPrice.value))
 
 /* ── Stock ──────────────────────────────────────────────── */
+// Below this (inclusive) a size is "low stock" and shows a small red count.
+const LOW_STOCK_THRESHOLD = 3
 // Product-level out of stock = every variant has zero stock.
 const outOfStock = computed(() => (product.value?.available_quantity ?? 1) <= 0)
 // Selected size's own stock.
@@ -135,6 +137,11 @@ const selectedStock = computed(() => selectedVariant.value?.available_quantity ?
 const selectedOutOfStock = computed(() => selectedStock.value <= 0)
 function sizeLabel(v: Variant): string {
   return v.size || v.variant_code
+}
+// A size shows a red low-stock number when it has 1..3 units left.
+function lowStockCount(v: Variant): number {
+  const q = v.available_quantity ?? 0
+  return q > 0 && q <= LOW_STOCK_THRESHOLD ? q : 0
 }
 
 /* ── Actions ────────────────────────────────────────────── */
@@ -196,6 +203,15 @@ async function checkDelivery() {
 /* ── Rating helpers ─────────────────────────────────────── */
 const ratingStars = (r: number) => Math.round(r)
 const avgRating   = computed(() => product.value?.rating_avg || 0)
+
+/* ── Reviews preview + "view all" modal ─────────────────── */
+// Show at least 5 reviews inline (6 when available); the rest open in a modal.
+const PREVIEW_REVIEWS = 5
+const previewReviews = computed(() => reviews.value.slice(0, PREVIEW_REVIEWS))
+const hasMoreReviews = computed(() => reviews.value.length > PREVIEW_REVIEWS)
+const allReviewsOpen = ref(false)
+function openAllReviews() { allReviewsOpen.value = true }
+function closeAllReviews() { allReviewsOpen.value = false }
 </script>
 
 <template>
@@ -336,7 +352,7 @@ const avgRating   = computed(() => product.value?.rating_avg || 0)
           <div v-if="selectedOutOfStock" class="inline-flex w-fit items-center gap-1.5 rounded-md bg-red-50 px-2.5 py-1 text-sm font-medium text-red-600">
             Selected size out of stock
           </div>
-          <div v-else-if="selectedStock > 0 && selectedStock <= 5" class="inline-flex w-fit items-center gap-1.5 rounded-md bg-amber-50 px-2.5 py-1 text-sm font-medium text-amber-700">
+          <div v-else-if="selectedStock > 0 && selectedStock <= LOW_STOCK_THRESHOLD" class="inline-flex w-fit items-center gap-1.5 rounded-md bg-red-50 px-2.5 py-1 text-sm font-medium text-red-600">
             Only {{ selectedStock }} left
           </div>
         </template>
@@ -344,7 +360,7 @@ const avgRating   = computed(() => product.value?.rating_avg || 0)
         <!-- Size selector -->
         <div v-if="product.variants && product.variants.length">
           <p class="label">Select Size</p>
-          <div class="flex flex-wrap gap-2">
+          <div class="flex flex-wrap gap-2.5 pt-1">
             <button
               v-for="v in product.variants"
               :key="v.id"
@@ -357,25 +373,33 @@ const avgRating   = computed(() => product.value?.rating_avg || 0)
               @click="selectedVariant = v"
             >
               {{ sizeLabel(v) }}
+              <!-- Low-stock indicator: small red number when 1..3 left for this size. -->
+              <span
+                v-if="lowStockCount(v)"
+                class="absolute -right-1.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-none text-white shadow-sm"
+                :title="`${lowStockCount(v)} left`"
+                aria-hidden="true"
+              >{{ lowStockCount(v) }}</span>
             </button>
           </div>
         </div>
 
-        <!-- Delivery checker -->
-        <div class="rounded-lg border border-stone-200 p-4">
-          <p class="text-sm font-medium mb-2">Check Delivery</p>
-          <div class="flex gap-2">
+        <!-- Delivery checker (compact) -->
+        <div class="rounded-lg border border-stone-200 px-3 py-2">
+          <div class="flex items-center gap-2">
+            <Truck :size="15" class="shrink-0 text-stone-400" />
             <input
               v-model="pincode"
               type="text"
-              placeholder="Enter pincode"
+              inputmode="numeric"
+              placeholder="Check delivery pincode"
               maxlength="6"
-              class="input flex-1"
+              class="input h-8 flex-1 py-1 text-sm"
               aria-label="Pincode"
             />
-            <button class="btn-ghost btn-sm shrink-0" @click="checkDelivery">Check</button>
+            <button class="btn-ghost btn-sm h-8 shrink-0 py-1" @click="checkDelivery">Check</button>
           </div>
-          <p v-if="deliveryMsg" class="mt-2 text-xs text-stone-600">{{ deliveryMsg }}</p>
+          <p v-if="deliveryMsg" class="mt-1.5 text-xs text-stone-600">{{ deliveryMsg }}</p>
         </div>
 
         <!-- Actions -->
@@ -442,66 +466,70 @@ const avgRating   = computed(() => product.value?.rating_avg || 0)
           </div>
         </section>
 
-        <!-- Seller card (ABOVE reviews) -->
+        <!-- Seller card (ABOVE reviews) — compact -->
         <section>
           <h2 class="text-h4 mb-2">Sold By</h2>
-          <div class="rounded-lg border border-stone-200 p-4">
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-stone-200 px-3 py-2.5">
             <component
               :is="seller ? RouterLink : 'div'"
               :to="seller ? `/seller/${seller.slug}` : undefined"
-              class="group flex items-center gap-3"
+              class="group flex min-w-0 items-center gap-2"
             >
-              <div class="flex h-11 w-11 items-center justify-center rounded-full bg-stone-100">
-                <Store :size="20" class="text-stone-500" />
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stone-100">
+                <Store :size="16" class="text-stone-500" />
               </div>
-              <div class="min-w-0 flex-1">
+              <div class="min-w-0">
                 <p class="truncate text-sm font-medium text-ink group-hover:underline">
                   {{ seller ? seller.name : 'A CARLITOS seller' }}
                 </p>
                 <span class="text-xs text-stone-500">{{ seller ? 'Visit store →' : 'Verified Seller' }}</span>
               </div>
             </component>
-            <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 border-t border-stone-100 pt-3 text-sm text-stone-600">
-              <span class="flex items-center gap-1.5"><Truck :size="14" class="text-stone-400" /> Free shipping ₹499+</span>
-              <span class="flex items-center gap-1.5"><RotateCcw :size="14" class="text-stone-400" /> 7-day returns</span>
-              <span class="flex items-center gap-1.5"><ShieldCheck :size="14" class="text-stone-400" /> Buyer protection</span>
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-stone-500 sm:ml-auto">
+              <span class="flex items-center gap-1"><Truck :size="13" class="text-stone-400" /> Free ₹499+</span>
+              <span class="flex items-center gap-1"><RotateCcw :size="13" class="text-stone-400" /> 7-day returns</span>
+              <span class="flex items-center gap-1"><ShieldCheck :size="13" class="text-stone-400" /> Protected</span>
             </div>
           </div>
         </section>
 
-        <!-- Reviews (BELOW seller) -->
+        <!-- Reviews (BELOW seller) — compact -->
         <section>
-          <h2 class="text-h4 mb-3">Reviews &amp; Ratings</h2>
+          <div class="mb-2 flex items-center justify-between">
+            <h2 class="text-h4">Reviews &amp; Ratings</h2>
+            <button
+              v-if="reviews.length"
+              class="text-xs font-medium text-accent hover:underline"
+              @click="openAllReviews"
+            >View all ({{ reviews.length }})</button>
+          </div>
 
-          <div v-if="!reviews.length" class="rounded-xl border border-stone-200 bg-stone-50 p-6 text-center">
-            <Star :size="28" class="mx-auto mb-2 text-stone-300" />
+          <div v-if="!reviews.length" class="rounded-lg border border-stone-200 bg-stone-50 p-4 text-center">
+            <Star :size="22" class="mx-auto mb-1.5 text-stone-300" />
             <p class="text-sm text-stone-500">No reviews yet. Buy this product to leave the first review.</p>
           </div>
 
-          <div v-else class="space-y-3">
-            <!-- Summary bar -->
-            <div class="flex items-center gap-4 rounded-lg border border-stone-200 bg-stone-50 p-4">
-              <div class="text-center">
-                <p class="text-3xl font-semibold text-ink">{{ avgRating.toFixed(1) }}</p>
-                <div class="mt-1 flex justify-center gap-0.5">
-                  <svg v-for="i in 5" :key="i" :class="['h-3.5 w-3.5', i <= ratingStars(avgRating) ? 'fill-amber-400 text-amber-400' : 'fill-stone-200 text-stone-200']" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                </div>
-                <p class="mt-0.5 text-xs text-stone-500">{{ product.rating_count }} reviews</p>
+          <div v-else class="space-y-2.5">
+            <!-- Summary bar (compact, horizontal) -->
+            <div class="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
+              <span class="text-xl font-semibold text-ink">{{ avgRating.toFixed(1) }}</span>
+              <div class="flex gap-0.5">
+                <svg v-for="i in 5" :key="i" :class="['h-3.5 w-3.5', i <= ratingStars(avgRating) ? 'fill-amber-400 text-amber-400' : 'fill-stone-200 text-stone-200']" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
               </div>
+              <span class="text-xs text-stone-500">{{ product.rating_count }} reviews</span>
             </div>
 
-            <!-- Review list -->
-            <div class="space-y-3">
-              <div v-for="(rv, i) in reviews.slice(0, 6)" :key="i" class="rounded-lg border border-stone-200 p-4">
+            <!-- Review preview list (at least 5) -->
+            <div class="space-y-2.5">
+              <div v-for="(rv, i) in previewReviews" :key="i" class="rounded-lg border border-stone-200 p-3">
                 <div class="mb-1 flex items-center gap-2">
                   <div class="flex gap-0.5">
-                    <svg v-for="s in 5" :key="s" :class="['h-3.5 w-3.5', s <= (rv.rating || 0) ? 'fill-amber-400 text-amber-400' : 'fill-stone-200 text-stone-200']" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+                    <svg v-for="s in 5" :key="s" :class="['h-3 w-3', s <= (rv.rating || 0) ? 'fill-amber-400 text-amber-400' : 'fill-stone-200 text-stone-200']" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
                   </div>
                   <span v-if="rv.is_verified_purchase" class="badge-green text-xs">Verified Purchase</span>
                 </div>
                 <p v-if="rv.title" class="text-sm font-medium text-ink">{{ rv.title }}</p>
-                <p class="mt-1 text-sm text-stone-600">{{ rv.body || rv.review_text || '' }}</p>
-                <!-- Review photos -->
+                <p class="mt-0.5 text-sm text-stone-600">{{ rv.body || rv.review_text || '' }}</p>
                 <div v-if="rv.photos && rv.photos.length" class="mt-2 flex flex-wrap gap-2">
                   <a
                     v-for="(ph, pi) in rv.photos"
@@ -509,14 +537,21 @@ const avgRating   = computed(() => product.value?.rating_avg || 0)
                     :href="resolveMediaUrl(MEDIA_BASE, ph)"
                     target="_blank"
                     rel="noopener"
-                    class="block h-16 w-16 overflow-hidden rounded-md border border-stone-200"
+                    class="block h-14 w-14 overflow-hidden rounded-md border border-stone-200"
                   >
                     <img :src="resolveMediaUrl(MEDIA_BASE, ph)" alt="Review photo" class="h-full w-full object-cover" loading="lazy" />
                   </a>
                 </div>
-                <p v-if="rv.customer_name || rv.author_name" class="mt-2 text-xs text-stone-400">— {{ rv.customer_name || rv.author_name }}</p>
+                <p v-if="rv.customer_name || rv.author_name" class="mt-1.5 text-xs text-stone-400">— {{ rv.customer_name || rv.author_name }}</p>
               </div>
             </div>
+
+            <!-- View all reviews button (opens modal with the full list) -->
+            <button
+              v-if="hasMoreReviews"
+              class="btn-ghost btn-sm w-full"
+              @click="openAllReviews"
+            >View all {{ reviews.length }} reviews</button>
           </div>
         </section>
       </div>
@@ -527,5 +562,62 @@ const avgRating   = computed(() => product.value?.rating_avg || 0)
       <h2 class="text-h3 mb-4">You Might Also Like</h2>
       <ProductCarousel :products="related" />
     </section>
+
+    <!-- ── All reviews modal ────────────────────────────── -->
+    <transition name="fade">
+      <div
+        v-if="allReviewsOpen"
+        class="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4"
+        @click.self="closeAllReviews"
+      >
+        <div class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-t-2xl bg-white shadow-lg sm:rounded-2xl">
+          <!-- Header -->
+          <div class="flex items-center justify-between border-b border-stone-100 px-5 py-4">
+            <div class="flex items-center gap-2">
+              <h3 class="text-base font-semibold text-ink">Reviews &amp; Ratings</h3>
+              <span class="flex items-center gap-1 text-sm text-stone-500">
+                <svg class="h-3.5 w-3.5 fill-amber-400 text-amber-400" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+                {{ avgRating.toFixed(1) }} · {{ product.rating_count }}
+              </span>
+            </div>
+            <button class="rounded px-2 py-1 text-xl leading-none text-stone-400 hover:bg-stone-50 hover:text-ink" aria-label="Close" @click="closeAllReviews">&times;</button>
+          </div>
+
+          <!-- Scrollable full list -->
+          <div class="flex-1 space-y-2.5 overflow-y-auto px-5 py-4">
+            <div v-for="(rv, i) in reviews" :key="i" class="rounded-lg border border-stone-200 p-3">
+              <div class="mb-1 flex items-center gap-2">
+                <div class="flex gap-0.5">
+                  <svg v-for="s in 5" :key="s" :class="['h-3 w-3', s <= (rv.rating || 0) ? 'fill-amber-400 text-amber-400' : 'fill-stone-200 text-stone-200']" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+                </div>
+                <span v-if="rv.is_verified_purchase" class="badge-green text-xs">Verified Purchase</span>
+              </div>
+              <p v-if="rv.title" class="text-sm font-medium text-ink">{{ rv.title }}</p>
+              <p class="mt-0.5 text-sm text-stone-600">{{ rv.body || rv.review_text || '' }}</p>
+              <div v-if="rv.photos && rv.photos.length" class="mt-2 flex flex-wrap gap-2">
+                <a
+                  v-for="(ph, pi) in rv.photos"
+                  :key="pi"
+                  :href="resolveMediaUrl(MEDIA_BASE, ph)"
+                  target="_blank"
+                  rel="noopener"
+                  class="block h-14 w-14 overflow-hidden rounded-md border border-stone-200"
+                >
+                  <img :src="resolveMediaUrl(MEDIA_BASE, ph)" alt="Review photo" class="h-full w-full object-cover" loading="lazy" />
+                </a>
+              </div>
+              <p v-if="rv.customer_name || rv.author_name" class="mt-1.5 text-xs text-stone-400">— {{ rv.customer_name || rv.author_name }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
+
+<style scoped>
+.fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+.img-fade-enter-active, .img-fade-leave-active { transition: opacity 0.2s ease; }
+.img-fade-enter-from, .img-fade-leave-to { opacity: 0; }
+</style>

@@ -11,14 +11,14 @@ withDefaults(defineProps<{ size?: 'sm' | 'md' | 'lg'; to?: string | null; wordma
 })
 
 const crest: Record<string, string> = {
-  sm: 'h-8',
-  md: 'h-10',
-  lg: 'h-16',
+  sm: 'h-10',
+  md: 'h-12',
+  lg: 'h-20',
 }
 const word: Record<string, string> = {
-  sm: 'text-base',
-  md: 'text-xl',
-  lg: 'text-3xl',
+  sm: 'text-xl',
+  md: 'text-2xl',
+  lg: 'text-4xl',
 }
 </script>
 
@@ -38,15 +38,17 @@ const word: Record<string, string> = {
     />
     <span
       v-if="wordmark"
-      class="brand-wordmark font-semibold tracking-[0.18em]"
+      class="brand-wordmark font-semibold leading-none tracking-[0.14em]"
       :class="word[size]"
     >{{ BRAND }}</span>
   </component>
 </template>
 
 <style scoped>
-/* Premium gold gradient wordmark. */
+/* Premium gold gradient serif wordmark. */
 .brand-wordmark {
+  font-family: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  font-feature-settings: 'liga' 1, 'kern' 1;
   background: linear-gradient(180deg, #e6c661 0%, #c9a227 45%, #a67c1a 100%);
   -webkit-background-clip: text;
   background-clip: text;
