@@ -86,8 +86,13 @@ export const customerApi = (c: ApiClient) => ({
   addWishlist: (product_id: string) => c.post<void>('/customer/wishlist/items', { product_id }),
   removeWishlist: (productId: string) => c.del<void>(`/customer/wishlist/items/${productId}`),
 
-  checkout: (payment_method: 'online' | 'cod', address_id?: string, coupon_code?: string) =>
-    c.post<Order>('/customer/checkout', { payment_method, address_id, coupon_code }),
+  checkout: (
+    payment_method: 'online' | 'cod',
+    address_id?: string,
+    coupon_code?: string,
+    selected_listing_ids?: string[],
+  ) =>
+    c.post<Order>('/customer/checkout', { payment_method, address_id, coupon_code, selected_listing_ids }),
   // List active offers/coupons available to the customer. Eligibility against
   // the current cart is computed client-side from min_order_amount; the actual
   // discount is always re-validated and recomputed server-side.

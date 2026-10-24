@@ -25,8 +25,8 @@ onMounted(async () => {
     <p class="mb-6 text-sm text-stone-500">Meet the people leading CARLITOS.</p>
 
     <!-- Loading -->
-    <div v-if="loading" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      <div v-for="i in 6" :key="i" class="skeleton h-64 w-full rounded-xl" />
+    <div v-if="loading" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      <div v-for="i in 8" :key="i" class="skeleton aspect-[3/4] w-full rounded-xl" />
     </div>
 
     <!-- Empty -->
@@ -36,8 +36,9 @@ onMounted(async () => {
     </div>
 
     <!-- Grid -->
-    <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div v-else class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
       <article v-for="m in members" :key="m.id" class="card overflow-hidden">
+        <!-- Large, dominant photo -->
         <div class="aspect-square w-full bg-stone-100">
           <img
             v-if="m.photo_key"
@@ -47,15 +48,16 @@ onMounted(async () => {
             loading="lazy"
           />
           <div v-else class="flex h-full w-full items-center justify-center">
-            <div class="flex h-16 w-16 items-center justify-center rounded-full bg-stone-900">
-              <User :size="28" class="text-white" />
+            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-stone-900 sm:h-14 sm:w-14">
+              <User :size="24" class="text-white" />
             </div>
           </div>
         </div>
-        <div class="p-4">
-          <p class="font-semibold text-ink break-words">{{ m.name }}</p>
-          <p class="mt-0.5 text-sm font-medium" style="color: #ff3f6c">{{ m.role }}</p>
-          <p v-if="m.bio" class="mt-2 text-sm leading-relaxed text-stone-500 break-words">{{ m.bio }}</p>
+        <!-- Name + smaller role + bio -->
+        <div class="p-2.5 sm:p-3">
+          <p class="text-sm font-semibold leading-tight text-ink break-words sm:text-base">{{ m.name }}</p>
+          <p class="mt-0.5 text-xs font-medium" style="color: #ff3f6c">{{ m.role }}</p>
+          <p v-if="m.bio" class="mt-1.5 text-xs leading-relaxed text-stone-500 break-words">{{ m.bio }}</p>
         </div>
       </article>
     </div>

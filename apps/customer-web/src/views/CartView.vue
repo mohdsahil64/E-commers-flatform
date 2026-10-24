@@ -1,23 +1,55 @@
 <script setup lang="ts">
 import { onMounted, ref, computed, watch } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
-import { Minus, Plus, Trash2, ShoppingBag, Sparkles } from 'lucide-vue-next'
+import { Minus, Plus, Trash2, ShoppingBag, Sparkles, Heart } from 'lucide-vue-next'
 import type { CartItem, ListingCard } from '@carlitos/types'
 import { formatINR, extractApiError, resolveMediaUrl } from '@carlitos/shared'
 import { MEDIA_BASE, pub } from '@/api'
 import { useCartStore } from '@/stores/cart'
+import { useWishlistStore } from '@/stores/wishlist'
 import { useAuthStore } from '@/stores/auth'
+import { useToastStore } from '@/stores/toast'
 import { REDIRECT_KEY } from '@/router'
 import PageBack from '@/components/PageBack.vue'
 import ProductCarousel from '@/components/ProductCarousel.vue'
 
 const router = useRouter()
 const cart   = useCartStore()
+const wishlist = useWishlistStore()
 const auth   = useAuthStore()
+const toast  = useToastStore()
 
 const loading = ref(true)
 const error   = ref('')
 const busy    = ref<Record<string, boolean>>({})
+
+/* ── Selection (which lines to check out) ───────────────────────────
+   Keyed by seller_listing_id (stable server id). Default: everything
+   selected. The user can untick items to exclude them from checkout;
+   unticked items stay in the cart. */
+const selected = ref<Record<string, boolean>>({})
+
+// Keep the selection map in sync with the cart lines: new lines default
+// to selected, removed lines are dropped from the map.
+watch(() => cart.lines.map(l => l.seller_listing_id).join(','), () => {
+  const next: Record<string, boolean> = {}
+  for (const l of cart.lines) {
+    next[l.seller_listing_id] = selected.value[l.seller_listing_id] ?? true
+  }
+  selected.value = next
+}, { immediate: true })
+
+const selectedLines = computed(() => cart.lines.filter(l => selected.value[l.seller_listing_id]))
+const selectedCount = computed(() => selectedLines.value.reduce((s, i) => s + i.quantity, 0))
+const selectedSubtotal = computed(() => selectedLines.value.reduce((s, i) => s + i.line_total, 0))
+const allSelected = computed(() =>
+  cart.lines.length > 0 && cart.lines.every(l => selected.value[l.seller_listing_id]))
+
+function toggleItem(id: string) { selected.value[id] = !selected.value[id] }
+function toggleAll() {
+  const v = !allSelected.value
+  for (const l of cart.lines) selected.value[l.seller_listing_id] = v
+}
 
 /* ── Suggestions ("You may also like") ──────────────────────────────
    Small recommendation cards shown under the cart. We pull trending
@@ -73,13 +105,52 @@ async function remove(item: CartItem) {
   }
 }
 
+// Move a cart line to the wishlist: add the product to the wishlist, then
+// remove it from the cart. product_id is empty for guest lines (the guest cart
+// snapshot doesn't carry it), so in that case we resolve it from the product.
+async function moveToWishlist(item: CartItem) {
+  busy.value[item.id] = true
+  try {
+    let productId = item.product_id
+    let ratingAvg = 0
+    if (!productId) {
+      const detail = await pub.product(item.slug)
+      productId = detail.id
+      ratingAvg = detail.rating_avg || 0
+    }
+    await wishlist.add({
+      product_id: productId,
+      title: item.product_title,
+      slug: item.slug,
+      image: item.image,
+      min_price: item.unit_price,
+      rating_avg: ratingAvg,
+    })
+    await cart.remove(item.seller_listing_id)
+    toast.success('Moved to wishlist')
+  } catch (e) {
+    toast.error(extractApiError(e))
+  } finally {
+    delete busy.value[item.id]
+  }
+}
+
 function goCheckout() {
+  if (!selectedLines.value.length) {
+    toast.error('Select at least one item to check out.')
+    return
+  }
   if (!auth.isAuthenticated) {
     sessionStorage.setItem(REDIRECT_KEY, '/checkout')
     router.push('/login')
     return
   }
-  router.push('/checkout')
+  // Pass the selected listing ids to checkout so only those items are ordered;
+  // the rest stay in the cart. If all are selected we omit the filter.
+  const ids = allSelected.value
+    ? []
+    : selectedLines.value.map(l => l.seller_listing_id)
+  router.push({ path: '/checkout', query: ids.length ? { items: ids.join(',') } : {} })
 }
 
 const items = computed(() => cart.lines)
@@ -87,6 +158,7 @@ const totalItems = computed(() => cart.count)
 
 onMounted(async () => {
   await load()
+  wishlist.refresh().catch(() => {})
   if (items.value.length) loadSuggestions()
 })
 
@@ -129,12 +201,35 @@ watch(() => items.value.length, (n, prev) => {
     <div v-else class="grid gap-4 lg:grid-cols-3">
       <!-- Items -->
       <div class="space-y-2 lg:col-span-2">
+        <!-- Select-all bar -->
+        <label class="flex items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-medium text-stone-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            class="h-4 w-4 shrink-0 rounded border-stone-300 text-accent accent-accent"
+            :checked="allSelected"
+            @change="toggleAll"
+          />
+          Select all ({{ selectedCount }}/{{ totalItems }} selected)
+        </label>
+
         <div
           v-for="item in items"
           :key="item.id"
-          class="flex gap-3 rounded-lg border border-stone-200 bg-white p-2.5"
-          :class="{ 'opacity-60 pointer-events-none': busy[item.id] }"
+          class="flex gap-2.5 rounded-lg border bg-white p-2.5 transition-colors"
+          :class="[
+            busy[item.id] ? 'opacity-60 pointer-events-none' : '',
+            selected[item.seller_listing_id] ? 'border-stone-300' : 'border-stone-200 opacity-70'
+          ]"
         >
+          <!-- Selection checkbox -->
+          <input
+            type="checkbox"
+            class="mt-1 h-4 w-4 shrink-0 self-start rounded border-stone-300 text-accent accent-accent"
+            :checked="!!selected[item.seller_listing_id]"
+            :aria-label="`Select ${item.product_title} for checkout`"
+            @change="toggleItem(item.seller_listing_id)"
+          />
+
           <RouterLink :to="`/product/${item.slug}`" class="block shrink-0">
             <div class="h-20 w-16 overflow-hidden rounded-md bg-stone-100">
               <img
@@ -176,6 +271,12 @@ watch(() => items.value.length, (n, prev) => {
               <div class="flex items-center gap-2.5">
                 <p class="text-xs font-semibold">{{ formatINR(item.line_total) }}</p>
                 <button
+                  class="flex items-center gap-1 text-[11px] text-stone-400 hover:text-accent transition-colors"
+                  :disabled="!!busy[item.id]"
+                  aria-label="Move to wishlist"
+                  @click="moveToWishlist(item)"
+                ><Heart :size="14" /><span class="hidden sm:inline">Wishlist</span></button>
+                <button
                   class="text-stone-400 hover:text-red-500 transition-colors"
                   :disabled="!!busy[item.id]"
                   aria-label="Remove item"
@@ -184,7 +285,7 @@ watch(() => items.value.length, (n, prev) => {
               </div>
             </div>
 
-            <p v-if="item.available_quantity > 0 && item.available_quantity <= 5" class="mt-1 text-[11px] text-amber-600">
+            <p v-if="item.available_quantity > 0 && item.available_quantity <= 3" class="mt-1 text-[11px] text-red-600">
               Only {{ item.available_quantity }} left in stock
             </p>
           </div>
@@ -196,8 +297,8 @@ watch(() => items.value.length, (n, prev) => {
         <h2 class="text-sm font-semibold text-ink mb-3">Order Summary</h2>
         <div class="space-y-2 text-xs">
           <div class="flex justify-between">
-            <span class="text-stone-500">Items ({{ totalItems }})</span>
-            <span class="font-medium">{{ formatINR(cart.subtotal) }}</span>
+            <span class="text-stone-500">Selected items ({{ selectedCount }})</span>
+            <span class="font-medium">{{ formatINR(selectedSubtotal) }}</span>
           </div>
           <div class="flex justify-between">
             <span class="text-stone-500">Delivery</span>
@@ -207,12 +308,16 @@ watch(() => items.value.length, (n, prev) => {
         <div class="my-3 border-t border-stone-200" />
         <div class="flex justify-between text-sm font-semibold">
           <span>Total</span>
-          <span>{{ formatINR(cart.subtotal) }}</span>
+          <span>{{ formatINR(selectedSubtotal) }}</span>
         </div>
         <p class="mt-1 text-[11px] text-stone-500">Inclusive of all taxes</p>
 
-        <button class="btn-primary btn-sm mt-4 w-full" @click="goCheckout">
-          {{ auth.isAuthenticated ? 'Proceed to Checkout' : 'Login to Checkout' }}
+        <button
+          class="btn-primary btn-sm mt-4 w-full disabled:opacity-50"
+          :disabled="!selectedLines.length"
+          @click="goCheckout"
+        >
+          {{ auth.isAuthenticated ? `Proceed to Checkout (${selectedCount})` : 'Login to Checkout' }}
         </button>
         <RouterLink to="/" class="mt-2 block text-center text-xs text-stone-500 hover:text-ink underline">
           Continue shopping

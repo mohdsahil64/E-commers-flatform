@@ -80,7 +80,9 @@ async function confirmAdd() {
       unit_price: v.selling_price,
       available_quantity: v.available_quantity ?? 99,
     })
-    toast.success('Added')
+    // Move semantics: once it's in the cart, drop it from the wishlist.
+    try { await wishlist.remove(p.id) } catch { /* best-effort */ }
+    toast.success('Moved to cart')
     picking.value = null
   } catch (e) {
     toast.error(extractApiError(e))
@@ -150,10 +152,10 @@ onMounted(load)
           <Trash2 :size="14" />
         </button>
 
-        <!-- Add to cart -->
+        <!-- Move to cart -->
         <div class="p-3 pt-0">
           <button class="btn-primary btn-sm w-full" @click="openPicker(item)">
-            <ShoppingBag :size="13" /> Add to Cart
+            <ShoppingBag :size="13" /> Move to Cart
           </button>
         </div>
       </div>
@@ -193,7 +195,7 @@ onMounted(load)
             <div class="mt-5 flex gap-3">
               <button class="btn-ghost flex-1" @click="picking = null">Cancel</button>
               <button class="btn-primary flex-1" :disabled="adding || !pickVariant" @click="confirmAdd">
-                {{ adding ? 'Adding…' : 'Add to Bag' }}
+                {{ adding ? 'Moving…' : 'Move to Cart' }}
               </button>
             </div>
           </template>

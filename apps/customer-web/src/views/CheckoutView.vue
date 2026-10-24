@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import {
   MapPin, CreditCard, ChevronRight, ChevronLeft, Plus,
-  Tag, X, Wallet, BadgePercent, Check,
+  Tag, X, Wallet, BadgePercent, Check, Banknote, Smartphone,
+  ShieldCheck, Info,
 } from 'lucide-vue-next'
 import type { Address, Coupon } from '@carlitos/types'
 import { customer, MEDIA_BASE } from '@/api'
@@ -17,9 +18,18 @@ import OrderSuccessModal from '@/components/OrderSuccessModal.vue'
 import CheckoutPriceSummary from '@/components/CheckoutPriceSummary.vue'
 
 const router = useRouter()
+const route = useRoute()
 const cart = useCartStore()
 const toast = useToastStore()
 const authStore = useAuthStore()
+
+// Selected cart lines to check out, passed from the cart page as a
+// comma-separated `items` query (seller_listing_ids). Empty => whole cart.
+const selectedListingIds = computed<string[]>(() => {
+  const raw = route.query.items
+  const s = Array.isArray(raw) ? raw[0] : raw
+  return s ? String(s).split(',').filter(Boolean) : []
+})
 
 /* ── State ──────────────────────────────────────────── */
 const step           = ref(1) // 1=address 2=payment 3=review
@@ -34,8 +44,14 @@ const loading        = ref(true)
 const showSuccess    = ref(false)
 const placedOrder    = ref<{ id: string; order_number: string; grand_total: number } | null>(null)
 
-const cartItems      = computed(() => cart.lines)
-const cartSubtotal   = computed(() => cart.subtotal)
+// Only the lines being checked out (the selection from the cart page). When no
+// selection was passed, this is the whole cart.
+const cartItems      = computed(() => {
+  if (!selectedListingIds.value.length) return cart.lines
+  const set = new Set(selectedListingIds.value)
+  return cart.lines.filter(l => set.has(l.seller_listing_id))
+})
+const cartSubtotal   = computed(() => cartItems.value.reduce((s, i) => s + i.line_total, 0))
 const shipping       = computed(() => 0)
 
 /* ── Cash on Delivery availability ──────────────────────────────────
@@ -203,7 +219,12 @@ async function placeOrder() {
   }
   placing.value = true
   try {
-    const order = await customer.checkout(paymentMethod.value, selectedAddr.value, appliedCoupon.value?.code)
+    const order = await customer.checkout(
+      paymentMethod.value,
+      selectedAddr.value,
+      appliedCoupon.value?.code,
+      selectedListingIds.value.length ? selectedListingIds.value : undefined,
+    )
 
     if (paymentMethod.value === 'online') {
       try {
@@ -397,39 +418,114 @@ function addrLine(a: Address): string {
       <!-- STEP 2: PAYMENT -->
       <template v-else-if="step === 2">
         <section class="card p-3">
-          <div class="mb-2 flex items-center gap-1.5">
+          <div class="mb-3 flex items-center gap-1.5">
             <CreditCard :size="15" class="text-stone-500" />
             <h2 class="text-xs font-semibold text-stone-700">Payment method</h2>
           </div>
-          <div class="space-y-2">
+
+          <div class="space-y-2.5">
+            <!-- Pay Online -->
             <label
-              class="flex items-start gap-2.5 rounded-lg border p-2.5 transition-colors"
-              :class="[
-                !codAvailable ? 'cursor-not-allowed border-stone-200 bg-stone-50 opacity-60'
-                              : paymentMethod === 'cod' ? 'cursor-pointer border-ink bg-stone-50'
-                              : 'cursor-pointer border-stone-200 hover:border-stone-300'
-              ]"
+              class="group relative block cursor-pointer rounded-xl border p-3 transition-all"
+              :class="paymentMethod === 'online'
+                ? 'border-ink bg-stone-50 ring-1 ring-ink'
+                : 'border-stone-200 hover:border-stone-300'"
             >
-              <input v-model="paymentMethod" type="radio" value="cod" class="mt-0.5 accent-ink" :disabled="!codAvailable" />
-              <div>
-                <p class="text-xs font-medium">Cash on Delivery</p>
-                <p v-if="codAvailable" class="mt-0.5 text-[11px] text-stone-500">Pay when your order arrives.</p>
-                <p v-else class="mt-0.5 text-[11px] text-amber-600">
-                  Not available for items from {{ codBlockedBy.join(', ') }}.
-                </p>
+              <input v-model="paymentMethod" type="radio" value="online" class="peer sr-only" />
+              <div class="flex items-start gap-3">
+                <span
+                  class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors"
+                  :class="paymentMethod === 'online' ? 'bg-ink text-white' : 'bg-stone-100 text-stone-500'"
+                >
+                  <Smartphone :size="18" />
+                </span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center justify-between gap-2">
+                    <p class="text-sm font-semibold text-ink">Pay Online</p>
+                    <span
+                      class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors"
+                      :class="paymentMethod === 'online' ? 'border-ink bg-ink text-white' : 'border-stone-300'"
+                    >
+                      <Check v-if="paymentMethod === 'online'" :size="11" />
+                    </span>
+                  </div>
+                  <p class="mt-0.5 text-[11px] text-stone-500">UPI, Cards, Net Banking &amp; Wallets</p>
+                  <!-- Real payment provider logos -->
+                  <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                    <img src="/payments/upi.svg" alt="UPI" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
+                    <img src="/payments/gpay.svg" alt="Google Pay" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
+                    <img src="/payments/phonepe.svg" alt="PhonePe" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
+                    <img src="/payments/paytm.svg" alt="Paytm" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
+                    <span class="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-white px-1.5 py-1 text-[10px] font-medium text-stone-600">
+                      <CreditCard :size="12" class="text-indigo-600" /> Cards
+                    </span>
+                  </div>
+                  <p class="mt-2 inline-flex items-center gap-1 text-[10px] text-stone-400">
+                    <ShieldCheck :size="11" class="text-emerald-500" /> Secured by
+                    <img src="/payments/razorpay.svg" alt="Razorpay" class="h-3.5 w-auto" loading="lazy" />
+                  </p>
+                </div>
               </div>
             </label>
+
+            <!-- Cash on Delivery -->
             <label
-              class="flex cursor-pointer items-start gap-2.5 rounded-lg border p-2.5 transition-colors"
-              :class="paymentMethod === 'online' ? 'border-ink bg-stone-50' : 'border-stone-200 hover:border-stone-300'"
+              class="group relative block rounded-xl border p-3 transition-all"
+              :class="!codAvailable
+                ? 'cursor-not-allowed border-stone-200 bg-stone-50 opacity-70'
+                : paymentMethod === 'cod'
+                  ? 'cursor-pointer border-ink bg-stone-50 ring-1 ring-ink'
+                  : 'cursor-pointer border-stone-200 hover:border-stone-300'"
             >
-              <input v-model="paymentMethod" type="radio" value="online" class="mt-0.5 accent-ink" />
-              <div>
-                <p class="text-xs font-medium">Pay Online</p>
-                <p class="mt-0.5 text-[11px] text-stone-500">Credit/Debit card, UPI, Net banking.</p>
+              <input v-model="paymentMethod" type="radio" value="cod" class="peer sr-only" :disabled="!codAvailable" />
+              <div class="flex items-start gap-3">
+                <span
+                  class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors"
+                  :class="!codAvailable
+                    ? 'bg-stone-100 text-stone-400'
+                    : paymentMethod === 'cod' ? 'bg-ink text-white' : 'bg-stone-100 text-stone-500'"
+                >
+                  <Banknote :size="18" />
+                </span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center justify-between gap-2">
+                    <p class="text-sm font-semibold" :class="codAvailable ? 'text-ink' : 'text-stone-500'">
+                      Cash on Delivery
+                    </p>
+                    <span
+                      v-if="codAvailable"
+                      class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors"
+                      :class="paymentMethod === 'cod' ? 'border-ink bg-ink text-white' : 'border-stone-300'"
+                    >
+                      <Check v-if="paymentMethod === 'cod'" :size="11" />
+                    </span>
+                  </div>
+                  <template v-if="codAvailable">
+                    <p class="mt-0.5 text-[11px] text-stone-500">Pay in cash when your order arrives.</p>
+                    <!-- COD badges (mirrors the online card) -->
+                    <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                      <img src="/payments/cod.svg" alt="Cash on Delivery" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
+                      <span class="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-white px-1.5 py-1 text-[10px] font-medium text-stone-600">
+                        <Wallet :size="12" class="text-emerald-600" /> Pay at doorstep
+                      </span>
+                    </div>
+                    <p class="mt-2 inline-flex items-center gap-1 text-[10px] text-stone-400">
+                      <ShieldCheck :size="11" class="text-emerald-500" /> No advance payment needed
+                    </p>
+                  </template>
+                  <!-- Disabled note when any seller in the cart doesn't offer COD -->
+                  <div v-else class="mt-1.5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
+                    <Info :size="12" class="mt-px shrink-0" />
+                    <span>
+                      Not available — {{ codBlockedBy.join(', ') }}
+                      {{ codBlockedBy.length > 1 ? "don't" : "doesn't" }} offer Cash on Delivery for this order.
+                    </span>
+                  </div>
+                </div>
               </div>
             </label>
           </div>
+
           <p v-if="error" class="mt-2 rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-600">{{ error }}</p>
         </section>
 

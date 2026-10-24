@@ -137,8 +137,16 @@ export const useCartStore = defineStore('cart', () => {
     guest.value = []
   }
 
+  // moveToWishlist removes a cart line and adds its product to the wishlist.
+  // Returns true on success. The wishlist add is done by the caller (which has
+  // the wishlist store + product_id); here we only drop the cart line so the
+  // store stays free of cross-store imports.
+  async function removeByListing(sellerListingId: string) {
+    await remove(sellerListingId)
+  }
+
   return {
     items, guest, loading, count, lines, subtotal,
-    refresh, add, updateQty, remove, mergeGuestIntoServer, clearGuest,
+    refresh, add, updateQty, remove, removeByListing, mergeGuestIntoServer, clearGuest,
   }
 })

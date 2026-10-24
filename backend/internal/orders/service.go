@@ -46,6 +46,10 @@ type CheckoutInput struct {
 	PaymentMethod string // online | cod
 	AddressID     string
 	CouponCode    string // optional discount coupon
+	// SelectedListingIDs, when non-empty, restricts the order to just these
+	// cart lines (seller_listing_id). The unselected lines stay in the cart.
+	// Empty/nil means "order the whole cart" (backward compatible).
+	SelectedListingIDs []string
 }
 
 // CouponApplier validates/redeems a coupon during checkout without the orders
@@ -98,6 +102,15 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*Order, error
 			return err
 		}
 		// Load cart lines (authoritative price from listing, not the snapshot).
+		// When SelectedListingIDs is provided, only those lines are ordered; the
+		// rest remain in the cart. Empty => the whole cart (backward compatible).
+		//
+		// $2 is always passed (a text[]); an empty array means "no filter" via the
+		// `cardinality($2)=0 OR ...` guard, so the same query serves both modes.
+		selected := in.SelectedListingIDs
+		if selected == nil {
+			selected = []string{}
+		}
 		rows, err := tx.Query(ctx, `
 			SELECT ci.seller_listing_id, ci.quantity, sl.seller_id, sl.selling_price,
 			       p.title, p.tax_percent, sl.sku, p.category_id, s.commission_percent,
@@ -106,7 +119,9 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*Order, error
 			JOIN seller_listings sl ON sl.id = ci.seller_listing_id
 			JOIN products p ON p.id = sl.product_id
 			JOIN sellers s ON s.id = sl.seller_id
-			WHERE ci.cart_id = $1`, cartID)
+			WHERE ci.cart_id = $1
+			  AND (cardinality($2::text[]) = 0 OR ci.seller_listing_id = ANY($2::text[]))`,
+			cartID, selected)
 		if err != nil {
 			return err
 		}
@@ -251,8 +266,10 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*Order, error
 			return err
 		}
 
-		// Clear the cart.
-		if err := s.cart.ClearTx(ctx, tx, cartID); err != nil {
+		// Clear only the lines that were actually ordered. With a partial
+		// selection this leaves the unselected items in the cart; with no
+		// selection (whole-cart checkout) it empties the cart as before.
+		if err := s.cart.ClearSelectedTx(ctx, tx, cartID, in.SelectedListingIDs); err != nil {
 			return err
 		}
 
@@ -292,10 +309,28 @@ func (s *Service) ConfirmPayment(ctx context.Context, orderID string) error {
 		`UPDATE orders SET payment_status='paid' WHERE id=$1 AND payment_method='online'`, orderID); err != nil {
 		return err
 	}
-	if err := s.repo.UpdateOrderStatus(ctx, orderID, StatusConfirmed, "", "system", "Payment confirmed"); err != nil {
+	// Idempotent: both the gateway webhook and the client-side verify call race
+	// to confirm the same payment. Whichever lands first moves the order to
+	// "confirmed"; the second must be a no-op, not an error. Only transition
+	// when the order is still in its initial state — if it's already confirmed
+	// (or further along) we silently succeed so the other caller doesn't 500.
+	var current Status
+	if err := s.repo.Pool().QueryRow(ctx,
+		`SELECT status FROM orders WHERE id=$1`, orderID).Scan(&current); err != nil {
 		return err
 	}
-	s.hook(ctx, orderID, "order.confirmed", "")
+	if current != StatusConfirmed && CanTransition(current, StatusConfirmed) {
+		if err := s.repo.UpdateOrderStatus(ctx, orderID, StatusConfirmed, "", "system", "Payment confirmed"); err != nil {
+			// If a concurrent caller confirmed it between our read and write,
+			// treat an invalid-transition as already-done rather than failing.
+			var ite *InvalidTransitionError
+			if asInvalid(err, &ite) {
+				return nil
+			}
+			return err
+		}
+		s.hook(ctx, orderID, "order.confirmed", "")
+	}
 	return nil
 }
 

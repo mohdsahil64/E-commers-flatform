@@ -162,6 +162,20 @@ func (r *Repository) ClearTx(ctx context.Context, tx pgx.Tx, cartID string) erro
 	return err
 }
 
+// ClearSelectedTx removes only the given listings from the cart (used after a
+// partial checkout where the customer selected a subset of items). If listingIDs
+// is empty it clears the whole cart, matching ClearTx's whole-cart semantics so
+// callers can pass the exact set that was ordered.
+func (r *Repository) ClearSelectedTx(ctx context.Context, tx pgx.Tx, cartID string, listingIDs []string) error {
+	if len(listingIDs) == 0 {
+		return r.ClearTx(ctx, tx, cartID)
+	}
+	_, err := tx.Exec(ctx,
+		`DELETE FROM cart_items WHERE cart_id = $1 AND seller_listing_id = ANY($2::text[])`,
+		cartID, listingIDs)
+	return err
+}
+
 // CartIDForCustomer returns the cart id for a customer id.
 func (r *Repository) CartIDForCustomer(ctx context.Context, customerID string) (string, error) {
 	var id string

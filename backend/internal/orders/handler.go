@@ -62,6 +62,9 @@ type checkoutBody struct {
 	PaymentMethod string `json:"payment_method"`
 	AddressID     string `json:"address_id"`
 	CouponCode    string `json:"coupon_code"`
+	// Optional: only check out these cart lines (by seller_listing_id). When
+	// omitted/empty the whole cart is ordered.
+	SelectedListingIDs []string `json:"selected_listing_ids"`
 }
 
 func (h *Handler) checkout(c *fiber.Ctx) error {
@@ -71,7 +74,7 @@ func (h *Handler) checkout(c *fiber.Ctx) error {
 	}
 	order, err := h.svc.Checkout(c.Context(), CheckoutInput{
 		UserID: auth.From(c).UserID, PaymentMethod: b.PaymentMethod, AddressID: b.AddressID,
-		CouponCode: b.CouponCode,
+		CouponCode: b.CouponCode, SelectedListingIDs: b.SelectedListingIDs,
 	})
 	if err != nil {
 		return err
