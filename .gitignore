@@ -12,11 +12,16 @@ build/
 backend/bin/
 backend/tmp/
 
-# Env files
+# Env files — never commit real secrets. Only *.example files are tracked.
 .env
 .env.local
+.env.development
+.env.production
+.env.*.local
 *.env
 !.env.example
+!.env.production.example
+!*.env.example
 
 # Logs
 *.log

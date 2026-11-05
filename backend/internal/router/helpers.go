@@ -21,8 +21,11 @@ func publicSellerStore(c *fiber.Ctx, repo *sellers.Repository) error {
 		"store_name":        s.StoreName,
 		"store_slug":        s.StoreSlug,
 		"store_description": s.StoreDescription,
+		"store_logo_key":    s.StoreLogoKey,
 		"rating_avg":        s.RatingAvg,
 		"rating_count":      s.RatingCount,
+		"status":            s.Status,
+		"created_at":        s.CreatedAt,
 	})
 }
 

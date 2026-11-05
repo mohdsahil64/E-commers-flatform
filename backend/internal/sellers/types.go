@@ -12,6 +12,9 @@ type Seller struct {
 	StoreName         string    `json:"store_name"`
 	StoreSlug         string    `json:"store_slug"`
 	StoreDescription  string    `json:"store_description"`
+	// StoreLogoKey is the storage key for the seller's uploaded store logo
+	// (empty when none). Frontends resolve it to a URL via resolveMediaUrl.
+	StoreLogoKey      string    `json:"store_logo_key"`
 	Status            string    `json:"status"`
 	LegalBusinessName string    `json:"legal_business_name"`
 	BusinessType      string    `json:"business_type"`
@@ -55,6 +58,10 @@ type ProfileUpdate struct {
 	// CODEnabledPtr carries the client's intent: nil means "leave unchanged",
 	// so saving notification prefs without a COD field never flips the setting.
 	CODEnabledPtr *bool `json:"-"`
+	// StoreLogoKeyPtr carries the client's intent for the store logo: nil means
+	// "leave unchanged", "" clears it, and any key sets it. This mirrors the COD
+	// pointer pattern so an unrelated save never wipes the logo.
+	StoreLogoKeyPtr *string `json:"-"`
 }
 
 // MaxResubmits is the number of times a rejected seller may resubmit their

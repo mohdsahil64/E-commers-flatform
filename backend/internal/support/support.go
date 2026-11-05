@@ -59,7 +59,24 @@ type Message struct {
 	ID         string    `json:"id"`
 	AuthorRole string    `json:"author_role"` // customer | seller | admin | system
 	Body       string    `json:"body"`
+	ImageKey   string    `json:"image_key"` // optional proof image sent in chat
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// validImageKey accepts only a plausible storage key (as returned by the
+// upload endpoint) or an https URL, so arbitrary strings can't be stored.
+func validImageKey(k string) bool {
+	if k == "" {
+		return true
+	}
+	if len(k) > 400 || strings.ContainsAny(k, " \t\r\n\\") || strings.Contains(k, "..") {
+		return false
+	}
+	lower := strings.ToLower(k)
+	if strings.Contains(lower, ":") {
+		return strings.HasPrefix(lower, "https://")
+	}
+	return true
 }
 
 // Photo is a customer-uploaded proof image (Cloudinary key).
@@ -116,11 +133,38 @@ type NotifyHook func(ctx context.Context, ticketID, event string)
 type Service struct {
 	repo   *Repository
 	notify NotifyHook
+	hub    *Hub
 }
 
 // NewService builds a support Service.
 func NewService(repo *Repository) *Service {
-	return &Service{repo: repo, notify: func(context.Context, string, string) {}}
+	return &Service{repo: repo, notify: func(context.Context, string, string) {}, hub: NewHub()}
+}
+
+// Hub exposes the real-time hub (used by the WebSocket endpoint).
+func (s *Service) Hub() *Hub { return s.hub }
+
+// audience resolves who may receive real-time events for a ticket.
+func (s *Service) audience(ctx context.Context, ticketID string) Audience {
+	var a Audience
+	var seller *string
+	err := s.repo.pool.QueryRow(ctx, `
+		SELECT cu.user_id::text, t.seller_id::text
+		FROM support_tickets t JOIN customers cu ON cu.id = t.customer_id
+		WHERE t.id = $1`, ticketID).Scan(&a.CustomerUserID, &seller)
+	if err != nil {
+		return Audience{}
+	}
+	if seller != nil {
+		a.SellerID = *seller
+	}
+	return a
+}
+
+// publishChanged tells connected portals to refetch (ticket created/resolved).
+func (s *Service) publishChanged(ticketID, status string) {
+	ctx := context.Background()
+	s.hub.Publish(Event{Type: "ticket_changed", TicketID: ticketID, Status: status}, s.audience(ctx, ticketID))
 }
 
 // WithNotifier attaches the create/resolve notification hook.
@@ -229,6 +273,7 @@ func (s *Service) Open(ctx context.Context, in OpenInput) (string, error) {
 	})
 	if err == nil && ticketID != "" {
 		s.notify(context.Background(), ticketID, "created")
+		s.publishChanged(ticketID, StatusOpen)
 	}
 	return ticketID, err
 }
@@ -239,18 +284,31 @@ type ReplyInput struct {
 	UserID     string
 	AuthorRole string // customer | seller | admin
 	Body       string
+	ImageKey   string // optional proof image (storage key from the upload API)
 	// Authorisation scope: for a seller reply, SellerID must own the ticket;
 	// for a customer reply, the ticket must belong to the customer.
 	SellerID   string
 }
 
-// Reply appends a message after verifying the author is allowed to act on the
-// ticket. A solved ticket cannot receive new replies.
-func (s *Service) Reply(ctx context.Context, in ReplyInput) error {
-	if strings.TrimSpace(in.Body) == "" {
-		return httpx.BadRequest("validation_failed", "Message cannot be empty")
+// Reply appends a message (text and/or one image) after verifying the author
+// is allowed to act on the ticket, then pushes it live to every connected
+// party. A solved ticket cannot receive new replies.
+func (s *Service) Reply(ctx context.Context, in ReplyInput) (Message, error) {
+	in.Body = strings.TrimSpace(in.Body)
+	in.ImageKey = strings.TrimSpace(in.ImageKey)
+	if in.Body == "" && in.ImageKey == "" {
+		return Message{}, httpx.BadRequest("validation_failed", "Message cannot be empty")
 	}
-	return pgx.BeginFunc(ctx, s.repo.pool, func(tx pgx.Tx) error {
+	if !validImageKey(in.ImageKey) {
+		return Message{}, httpx.BadRequest("validation_failed", "Invalid image")
+	}
+	// Photo proof is customer-only; seller and admin can view it but not send it.
+	if in.ImageKey != "" && in.AuthorRole != "customer" {
+		return Message{}, httpx.Forbidden("not_allowed", "Only the customer can send photos")
+	}
+	var msg Message
+	newStatus := ""
+	err := pgx.BeginFunc(ctx, s.repo.pool, func(tx pgx.Tx) error {
 		t, err := lockTicket(ctx, tx, in.TicketID)
 		if err != nil {
 			return err
@@ -261,13 +319,18 @@ func (s *Service) Reply(ctx context.Context, in ReplyInput) error {
 		if t.status == StatusSolved {
 			return httpx.Conflict("ticket_solved", "This ticket is already solved")
 		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO support_ticket_messages (ticket_id, author_role, author_id, body)
-			VALUES ($1,$2,$3,$4)`, in.TicketID, in.AuthorRole, in.UserID, strings.TrimSpace(in.Body)); err != nil {
+		msg = Message{AuthorRole: in.AuthorRole, Body: in.Body, ImageKey: in.ImageKey}
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO support_ticket_messages (ticket_id, author_role, author_id, body, image_key)
+			VALUES ($1,$2,$3,$4,$5) RETURNING id, created_at`,
+			in.TicketID, in.AuthorRole, in.UserID, in.Body, in.ImageKey).
+			Scan(&msg.ID, &msg.CreatedAt); err != nil {
 			return err
 		}
+		newStatus = t.status
 		// A responder's first reply moves an open ticket to in_progress.
 		if t.status == StatusOpen && in.AuthorRole != "customer" {
+			newStatus = StatusInProgress
 			if _, err := tx.Exec(ctx,
 				`UPDATE support_tickets SET status='in_progress', updated_at=now() WHERE id=$1`, in.TicketID); err != nil {
 				return err
@@ -280,6 +343,13 @@ func (s *Service) Reply(ctx context.Context, in ReplyInput) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return Message{}, err
+	}
+	// Live push to the customer, the owning seller and the admin desk.
+	s.hub.Publish(Event{Type: "message", TicketID: in.TicketID, Status: newStatus, Message: &msg},
+		s.audience(ctx, in.TicketID))
+	return msg, nil
 }
 
 // ResolveInput marks a ticket solved with a resolution note (the responder's
@@ -328,6 +398,7 @@ func (s *Service) Resolve(ctx context.Context, in ResolveInput) error {
 	})
 	if err == nil {
 		s.notify(context.Background(), in.TicketID, "resolved")
+		s.publishChanged(in.TicketID, StatusSolved)
 	}
 	return err
 }
@@ -501,7 +572,7 @@ func (s *Service) attachPhotos(ctx context.Context, out []Ticket, index map[stri
 
 func (s *Service) attachMessages(ctx context.Context, out []Ticket, index map[string]int, ids []string) error {
 	rows, err := s.repo.pool.Query(ctx,
-		`SELECT ticket_id, id, author_role, body, created_at
+		`SELECT ticket_id, id, author_role, body, image_key, created_at
 		 FROM support_ticket_messages WHERE ticket_id = ANY($1) ORDER BY created_at`, ids)
 	if err != nil {
 		return err
@@ -510,7 +581,7 @@ func (s *Service) attachMessages(ctx context.Context, out []Ticket, index map[st
 	for rows.Next() {
 		var tid string
 		var m Message
-		if err := rows.Scan(&tid, &m.ID, &m.AuthorRole, &m.Body, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&tid, &m.ID, &m.AuthorRole, &m.Body, &m.ImageKey, &m.CreatedAt); err != nil {
 			return err
 		}
 		if i, ok := index[tid]; ok {

@@ -2,6 +2,8 @@ package sellers
 
 import (
 	"context"
+	"net/mail"
+	"regexp"
 	"strings"
 
 	"github.com/carlitos/backend/internal/httpx"
@@ -85,6 +87,10 @@ func (s *Service) SaveBusinessInfo(ctx context.Context, sellerID string, in Sell
 
 // CompleteStep marks an onboarding step complete.
 func (s *Service) CompleteStep(ctx context.Context, sellerID, step string) error {
+	// Locked once submitted/approved, same as the other onboarding writes.
+	if err := s.ensureOnboardingEditable(ctx, sellerID); err != nil {
+		return err
+	}
 	return s.repo.MarkOnboardingStep(ctx, sellerID, step)
 }
 
@@ -204,6 +210,64 @@ func (s *Service) ensureOnboardingEditable(ctx context.Context, sellerID string)
 	return nil
 }
 
+var (
+	panRe   = regexp.MustCompile(`^[A-Z]{5}[0-9]{4}[A-Z]$`)
+	gstRe   = regexp.MustCompile(`^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$`)
+	phoneRe = regexp.MustCompile(`^[0-9]{10}$`)
+)
+
+// FillBusinessInfo lets a seller add business details that are still missing
+// (GST, PAN, legal name, business type, contact email/phone). Values already on
+// file are NEVER changed — this works even after approval, when the rest of the
+// profile is locked. Returns the updated seller.
+func (s *Service) FillBusinessInfo(ctx context.Context, sellerID string, in Seller) (*Seller, error) {
+	in.LegalBusinessName = strings.TrimSpace(in.LegalBusinessName)
+	in.BusinessType = strings.TrimSpace(in.BusinessType)
+	in.OwnerName = strings.TrimSpace(in.OwnerName)
+	in.ContactEmail = strings.TrimSpace(in.ContactEmail)
+	in.ContactPhone = strings.TrimSpace(in.ContactPhone)
+	in.GSTNumber = strings.ToUpper(strings.TrimSpace(in.GSTNumber))
+	in.PANNumber = strings.ToUpper(strings.TrimSpace(in.PANNumber))
+
+	if in.PANNumber != "" && !panRe.MatchString(in.PANNumber) {
+		return nil, httpx.BadRequest("validation_failed", "Enter a valid 10-character PAN (e.g. ABCDE1234F)")
+	}
+	if in.GSTNumber != "" && !gstRe.MatchString(in.GSTNumber) {
+		return nil, httpx.BadRequest("validation_failed", "Enter a valid 15-character GSTIN (e.g. 22ABCDE1234F1Z5)")
+	}
+	if in.ContactEmail != "" {
+		if _, err := mail.ParseAddress(in.ContactEmail); err != nil {
+			return nil, httpx.BadRequest("validation_failed", "Enter a valid contact email")
+		}
+	}
+	if in.ContactPhone != "" {
+		digits := strings.NewReplacer(" ", "", "-", "", "+91", "").Replace(in.ContactPhone)
+		if !phoneRe.MatchString(digits) {
+			return nil, httpx.BadRequest("validation_failed", "Enter a valid 10-digit contact phone")
+		}
+		in.ContactPhone = digits
+	}
+
+	if err := s.repo.FillMissingBusinessInfo(ctx, sellerID, in); err != nil {
+		if err == ErrNotFound {
+			return nil, httpx.NotFound("seller_not_found", "Seller not found")
+		}
+		return nil, err
+	}
+	return s.repo.FindByID(ctx, sellerID)
+}
+
+// onboardingLocked reports whether the seller's onboarding data is locked.
+func (s *Service) onboardingLocked(ctx context.Context, sellerID string) (bool, error) {
+	seller, err := s.repo.FindByID(ctx, sellerID)
+	if err == ErrNotFound {
+		return false, httpx.NotFound("seller_not_found", "Seller not found")
+	} else if err != nil {
+		return false, err
+	}
+	return !onboardingEditable(seller.Status), nil
+}
+
 // SaveOwnerInfo persists owner/business/tax details for the onboarding.
 func (s *Service) SaveOwnerInfo(ctx context.Context, sellerID string, in Seller) error {
 	if err := s.ensureOnboardingEditable(ctx, sellerID); err != nil {
@@ -217,8 +281,20 @@ func (s *Service) SaveOwnerInfo(ctx context.Context, sellerID string, in Seller)
 
 // SaveBank validates and persists the seller payout bank account.
 func (s *Service) SaveBank(ctx context.Context, sellerID string, b BankAccount) error {
-	if err := s.ensureOnboardingEditable(ctx, sellerID); err != nil {
+	locked, err := s.onboardingLocked(ctx, sellerID)
+	if err != nil {
 		return err
+	}
+	if locked {
+		// Locked after submission/approval — but a seller with NO bank account on
+		// file may still add one (an existing account is never replaced).
+		existing, err := s.repo.GetBankAccount(ctx, sellerID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			return httpx.Forbidden("onboarding_locked", "Your details are locked after submission. Contact support to change them.")
+		}
 	}
 	if b.AccountHolder == "" || len(b.AccountNumber) < 8 || b.IFSC == "" {
 		return httpx.BadRequest("validation_failed", "Account holder, a valid account number and IFSC are required")
@@ -228,8 +304,19 @@ func (s *Service) SaveBank(ctx context.Context, sellerID string, b BankAccount) 
 
 // SavePickup validates and persists the seller pickup / store location.
 func (s *Service) SavePickup(ctx context.Context, sellerID string, a PickupAddress) error {
-	if err := s.ensureOnboardingEditable(ctx, sellerID); err != nil {
+	locked, err := s.onboardingLocked(ctx, sellerID)
+	if err != nil {
 		return err
+	}
+	if locked {
+		// Same rule as the bank account: add if missing, never replace.
+		existing, err := s.repo.GetPickupAddress(ctx, sellerID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			return httpx.Forbidden("onboarding_locked", "Your details are locked after submission. Contact support to change them.")
+		}
 	}
 	if a.ContactName == "" || a.ContactPhone == "" || a.Line1 == "" || a.City == "" || a.State == "" || a.Pincode == "" {
 		return httpx.BadRequest("validation_failed", "Contact, address, city, state and pincode are required")

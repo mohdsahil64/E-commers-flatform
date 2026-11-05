@@ -171,7 +171,7 @@ func (r *Repository) ClearSelectedTx(ctx context.Context, tx pgx.Tx, cartID stri
 		return r.ClearTx(ctx, tx, cartID)
 	}
 	_, err := tx.Exec(ctx,
-		`DELETE FROM cart_items WHERE cart_id = $1 AND seller_listing_id = ANY($2::text[])`,
+		`DELETE FROM cart_items WHERE cart_id = $1 AND seller_listing_id::text = ANY($2::text[])`,
 		cartID, listingIDs)
 	return err
 }

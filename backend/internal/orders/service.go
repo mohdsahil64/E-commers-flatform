@@ -120,7 +120,7 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*Order, error
 			JOIN products p ON p.id = sl.product_id
 			JOIN sellers s ON s.id = sl.seller_id
 			WHERE ci.cart_id = $1
-			  AND (cardinality($2::text[]) = 0 OR ci.seller_listing_id = ANY($2::text[]))`,
+			  AND (cardinality($2::text[]) = 0 OR ci.seller_listing_id::text = ANY($2::text[]))`,
 			cartID, selected)
 		if err != nil {
 			return err
@@ -160,11 +160,24 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*Order, error
 		// customer must pay online. This mirrors the storefront, which disables
 		// the COD option in the same situation — this is the authoritative check.
 		if in.PaymentMethod == "cod" {
+			var blocked []string
+			seen := map[string]bool{}
 			for _, l := range lines {
-				if !l.codEnabled {
-					return httpx.BadRequest("cod_unavailable",
-						"Cash on Delivery isn't available for one or more items in your cart. Please pay online.")
+				if !l.codEnabled && !seen[l.title] {
+					seen[l.title] = true
+					blocked = append(blocked, l.title)
 				}
+			}
+			if len(blocked) > 0 {
+				msg := fmt.Sprintf(
+					"Cash on Delivery isn't available for these items: %s. Remove them from your cart or pay online.",
+					strings.Join(blocked, ", "))
+				if len(blocked) == 1 {
+					msg = fmt.Sprintf(
+						"Cash on Delivery isn't available for \"%s\". Remove it from your cart or pay online.",
+						blocked[0])
+				}
+				return httpx.BadRequest("cod_unavailable", msg)
 			}
 		}
 

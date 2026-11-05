@@ -40,6 +40,16 @@ const pickupDone   = computed(() => !!bundle.value?.onboarding?.pickup_completed
 const contractDone = computed(() => !!bundle.value?.onboarding?.contract_completed || !!bundle.value?.seller?.contract_signed)
 const status       = computed(() => bundle.value?.seller?.status ?? 'pending')
 const alreadySubmitted = computed(() => status.value === 'under_review')
+// Onboarding data is editable ONLY while pending (first submit) or rejected
+// (fix & resubmit). Once approved (or suspended/blocked) it is view-only — the
+// server enforces the same rule ('onboarding_locked').
+const editable = computed(() => ['pending', 'rejected'].includes(status.value))
+const isLockedView = computed(() => !loading.value && !!bundle.value && !editable.value && !alreadySubmitted.value)
+const rejectionReason = computed(() => bundle.value?.seller?.rejection_reason || '')
+const maskedAccount = computed(() => {
+  const n = bundle.value?.bank?.account_number || ''
+  return n ? `•••• ${n.slice(-4)}` : '—'
+})
 
 const pickupValid = computed(() =>
   pickup.value.contact_name.trim().length > 1 &&
@@ -130,8 +140,52 @@ onMounted(load)
       <p class="mt-0.5 text-sm text-stone-500">Two quick steps to activate your {{ BRAND }} store.</p>
     </div>
 
+    <!-- Approved / suspended / blocked: read-only summary, no editing -->
+    <div v-if="isLockedView" class="card p-6">
+      <div class="mb-4 flex items-start gap-3">
+        <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100">
+          <ShieldCheck :size="20" class="text-emerald-600" />
+        </div>
+        <div>
+          <h2 class="text-h4">Onboarding {{ status === 'approved' ? 'complete' : 'locked' }}</h2>
+          <p class="mt-0.5 text-sm text-stone-500">
+            Your details are locked and can't be edited. To change anything, please contact seller support.
+          </p>
+        </div>
+      </div>
+
+      <dl class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+        <div>
+          <dt class="text-xs uppercase tracking-wide text-stone-400">Owner</dt>
+          <dd class="mt-0.5 font-medium">{{ bundle?.seller?.owner_name || '—' }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wide text-stone-400">Commission agreement</dt>
+          <dd class="mt-0.5 font-medium">{{ contractDone ? 'Signed' : 'Not signed' }}</dd>
+        </div>
+        <div class="sm:col-span-2">
+          <dt class="text-xs uppercase tracking-wide text-stone-400">Pickup location</dt>
+          <dd class="mt-0.5">
+            <template v-if="bundle?.pickup">
+              {{ bundle.pickup.contact_name }} · {{ bundle.pickup.contact_phone }}<br />
+              {{ [bundle.pickup.line1, bundle.pickup.line2, bundle.pickup.city, bundle.pickup.state, bundle.pickup.pincode].filter(Boolean).join(', ') }}
+            </template>
+            <template v-else>—</template>
+          </dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wide text-stone-400">Bank account</dt>
+          <dd class="mt-0.5">
+            {{ bundle?.bank?.bank_name || '—' }} <span class="text-stone-400">{{ maskedAccount }}</span>
+          </dd>
+        </div>
+      </dl>
+
+      <button class="btn-primary mt-5" @click="router.push('/')">Back to dashboard</button>
+    </div>
+
     <!-- Already under review -->
-    <div v-if="alreadySubmitted" class="card p-6 text-center">
+    <div v-else-if="alreadySubmitted" class="card p-6 text-center">
       <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-amber-100">
         <ShieldCheck :size="22" class="text-amber-600" />
       </div>
@@ -140,7 +194,14 @@ onMounted(load)
       <button class="btn-primary mt-4" @click="router.push('/')">Back to dashboard</button>
     </div>
 
-    <template v-else>
+    <template v-else-if="!isLockedView">
+      <!-- Rejected: show why, and that the seller can fix and resubmit -->
+      <div v-if="status === 'rejected'" class="mb-5 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <p class="font-semibold">Your application was rejected</p>
+        <p v-if="rejectionReason" class="mt-0.5">{{ rejectionReason }}</p>
+        <p class="mt-0.5">Update your details below and submit again.</p>
+      </div>
+
       <!-- Step indicator -->
       <div class="mb-8 flex items-center overflow-x-auto pb-1">
         <template v-for="(s, i) in STEPS" :key="s.n">

@@ -3,8 +3,8 @@ import { onMounted, ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ChevronLeft, Store, Check, X, Ban, RefreshCcw, Pause } from 'lucide-vue-next'
 import type { Seller } from '@carlitos/types'
-import { admin } from '@/api'
-import { formatDate, SELLER_STATUS_LABELS, extractApiError } from '@carlitos/shared'
+import { admin, MEDIA_BASE } from '@/api'
+import { formatDate, resolveMediaUrl, SELLER_STATUS_LABELS, extractApiError } from '@carlitos/shared'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
 const route   = useRoute()
@@ -88,8 +88,9 @@ onMounted(async () => { await load(); loading.value = false })
     <!-- Header -->
     <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
       <div class="flex items-center gap-4">
-        <div class="flex h-14 w-14 items-center justify-center rounded-full bg-stone-900">
-          <Store :size="24" class="text-white" />
+        <div class="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-900">
+          <img v-if="s.store_logo_key" :src="resolveMediaUrl(MEDIA_BASE, s.store_logo_key)" :alt="s.store_name" class="h-full w-full object-cover" />
+          <Store v-else :size="24" class="text-white" />
         </div>
         <div>
           <div class="flex items-center gap-2">

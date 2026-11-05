@@ -116,13 +116,27 @@ type CORSConfig struct {
 	AllowedOrigins []string
 }
 
-// Load reads configuration from the environment. It attempts to load a `.env`
-// file first (ignored if absent) so local development is friction-free.
+// Load reads configuration from the environment. It attempts to load `.env`
+// files first (ignored if absent) so local development is friction-free.
+//
+// Environment-aware loading, so the SAME checkout runs correctly on a laptop
+// and on the server with no manual edits:
+//
+//   1. Real OS environment variables always win (nothing below overrides them).
+//   2. APP_ENV decides which override file is layered on top of the base .env:
+//        - APP_ENV=production            -> .env.production
+//        - APP_ENV=development (default) -> .env.local  (then .env.development)
+//      These override files hold machine-specific values (DB URL, secrets,
+//      domain, provider keys). The override is loaded BEFORE the base .env so,
+//      with godotenv's "first-writer-wins" semantics, its values take priority.
+//   3. .env is the shared base (committed-safe defaults / common settings).
+//
+// So on your Mac you keep a `.env.local`; on the VPS you keep a
+// `.env.production`; both can share a plain `.env`. Whichever machine you run
+// on picks up its own file automatically based on APP_ENV. If no override file
+// exists, it falls back to plain `.env` exactly as before (backward compatible).
 func Load() (*Config, error) {
-	// Best-effort .env load; real env vars always win.
-	_ = godotenv.Load()
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load("../../.env")
+	loadDotenvFiles()
 
 	cfg := &Config{
 		App: AppConfig{
@@ -313,6 +327,41 @@ func resolveDatabaseURL() string {
 }
 
 // ---- helpers ----
+
+// loadDotenvFiles layers .env files based on APP_ENV, searching the working
+// dir and up to two parents (so it works whether the binary runs from repo
+// root, backend/, or backend/cmd/api/). godotenv does NOT overwrite a variable
+// that is already set, so the first file to define a key wins. We therefore
+// load the most specific (environment override) file first, then the shared
+// base .env, and real OS env vars — read before any of this — always win.
+func loadDotenvFiles() {
+	// APP_ENV may itself come from an OS env var or the base .env. Peek at the
+	// OS value first; if unset we treat it as development.
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+
+	// Candidate override files, most-specific first. For production we only
+	// layer .env.production; for anything else (development/local) we layer
+	// .env.local then .env.development.
+	var overrides []string
+	if env == "production" {
+		overrides = []string{".env.production"}
+	} else {
+		overrides = []string{".env.local", ".env.development"}
+	}
+
+	// Directory prefixes to try, so the lookup works from several run locations.
+	prefixes := []string{"", "../", "../../"}
+
+	// Load override files first (they win), then the shared base .env.
+	for _, name := range overrides {
+		for _, p := range prefixes {
+			_ = godotenv.Load(p + name)
+		}
+	}
+	for _, p := range prefixes {
+		_ = godotenv.Load(p + ".env")
+	}
+}
 
 func getEnv(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {

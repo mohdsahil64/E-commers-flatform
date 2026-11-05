@@ -38,11 +38,182 @@ export interface AuthUser {
   permissions: string[]
 }
 
+// ---------------------------------------------------------------------
+// Shipments (seller "Shipments" page + admin "Shipping" page)
+// ---------------------------------------------------------------------
+export type ShipmentStatus =
+  | 'created' | 'label_generated' | 'pickup_scheduled' | 'picked_up' | 'in_transit'
+  | 'out_for_delivery' | 'delivered' | 'failed' | 'rto' | 'cancelled'
+
+export interface ShipmentRow {
+  id: string
+  order_id: string
+  order_number: string
+  seller_id: string
+  store_name: string
+  provider: string
+  ship_type: 'courier' | 'self'
+  awb_number: string
+  courier_name: string
+  status: ShipmentStatus
+  direction: 'forward' | 'return'
+  tracking_url: string
+  created_at: string
+  pickup_scheduled_at: string | null
+  shipped_at: string | null
+  delivered_at: string | null
+  freight_charge: number
+  customer_name: string
+  ship_city: string
+  ship_state: string
+  ship_pincode: string
+  payment_method: 'online' | 'cod' | string
+  /** Amount to collect on delivery (0 for prepaid orders). */
+  cod_amount: number
+  item_count: number
+  item_title: string
+  /** Why this shipment looks stuck or failed ('' when it is fine). */
+  attention: string
+}
+
+export interface ShipmentEvent {
+  status: string
+  location: string
+  description: string
+  event_time: string
+}
+
+export interface ShipmentLine {
+  title: string
+  variant: string
+  sku: string
+  quantity: number
+  amount: number
+}
+
+export interface ShipmentDetail extends ShipmentRow {
+  contact_phone: string
+  ship_line1: string
+  ship_line2: string
+  ship_country: string
+  order_status: string
+  items: ShipmentLine[]
+  events: ShipmentEvent[]
+}
+
+/** A packed order that still needs a shipment (seller's "Ready to ship"). */
+export interface ReadyOrder {
+  order_id: string
+  order_number: string
+  customer_name: string
+  ship_city: string
+  ship_state: string
+  ship_pincode: string
+  payment_method: 'online' | 'cod' | string
+  placed_at: string
+  item_count: number
+  item_title: string
+  amount: number
+  cod_amount: number
+  status: 'packed' | 'ready_to_ship'
+}
+
+export interface ShipmentSummary {
+  total: number
+  pending: number
+  in_transit: number
+  delivered: number
+  problem: number
+  cancelled: number
+  attention: number
+}
+
 export interface TokenPair {
   access_token: string
   refresh_token: string
   expires_at: string
   user: AuthUser
+}
+
+/**
+ * Returned by the admin login INSTEAD of tokens when an invited employee signs
+ * in with their temporary password. They must verify the emailed code and pick
+ * a new password (see `adminSetupVerify`) before getting a session.
+ */
+export interface AdminSetupRequired {
+  setup_required: true
+  setup_token: string
+  email_masked: string
+  name: string
+  code_expires_in: number
+  setup_expires_in: number
+}
+
+export type AdminLoginResult = TokenPair | AdminSetupRequired
+
+// ---------------------------------------------------------------------
+// Admin staff, roles & account (Employees / Roles / Settings pages)
+// ---------------------------------------------------------------------
+export type StaffStatus = 'active' | 'pending' | 'expired' | 'disabled'
+
+export interface StaffMember {
+  id: string
+  full_name: string
+  email: string
+  phone: string
+  status: StaffStatus
+  role_id: string
+  role_code: string
+  role_name: string
+  is_super_admin: boolean
+  is_you: boolean
+  invited_by: string
+  invited_at: string | null
+  invite_expires_at: string | null
+  invite_count: number
+  accepted_at: string | null
+  last_login_at: string | null
+  created_at: string
+}
+
+export interface AdminRole {
+  id: string
+  code: string
+  name: string
+  description: string
+  is_system: boolean
+  permissions: string[]
+  member_count: number
+  /** The signed-in admin may edit/delete this role. */
+  editable: boolean
+  /** The signed-in admin may give this role to an employee. */
+  assignable: boolean
+}
+
+export interface PermissionItem {
+  code: string
+  label: string
+  group: string
+  description: string
+  /** The signed-in admin holds this permission (can only grant what they hold). */
+  held: boolean
+}
+
+export interface AdminAccount {
+  id: string
+  full_name: string
+  email: string
+  phone: string
+  status: string
+  kind: 'owner' | 'employee'
+  is_super_admin: boolean
+  roles: { code: string; name: string }[]
+  permissions: string[]
+  invited_by: string
+  accepted_at: string | null
+  last_login_at: string | null
+  created_at: string
+  team?: { active: number; pending: number; disabled: number; roles: number }
 }
 
 // ---------------------------------------------------------------------
@@ -165,6 +336,8 @@ export interface ListingCard {
   seller_id: string
   seller_name: string
   seller_slug: string
+  /** Storage key for the seller's store logo (empty when none). */
+  seller_logo_key: string
   rank_score: number
   available_quantity?: number
   in_stock?: boolean
@@ -274,6 +447,8 @@ export interface Seller {
   store_name: string
   store_slug: string
   store_description: string
+  /** Storage key for the seller's uploaded store logo (empty when none). */
+  store_logo_key: string
   status: SellerStatus
   legal_business_name: string
   business_type: string
@@ -448,7 +623,20 @@ export interface SupportMessage {
   id: string
   author_role: 'customer' | 'seller' | 'admin' | 'system'
   body: string
+  /** Optional proof image sent in the chat (storage key). */
+  image_key?: string
   created_at: string
+}
+
+/** Real-time event pushed over the support WebSocket. */
+export interface SupportSocketEvent {
+  /** Empty for customer tickets; "seller_support" for seller → admin tickets. */
+  scope?: 'seller_support'
+  /** "message" = new chat message; "ticket_changed" = created/resolved → refetch. */
+  type: 'message' | 'ticket_changed'
+  ticket_id: string
+  status?: SupportStatus
+  message?: SupportMessage
 }
 
 export interface SupportPhoto {
@@ -471,6 +659,69 @@ export interface SupportTicket {
   product_title: string
   product_image: string
   variant_label: string
+  subject: string
+  description: string
+  status: SupportStatus
+  resolution: string
+  resolved_at: string | null
+  created_at: string
+  updated_at: string
+  photos: SupportPhoto[]
+  messages: SupportMessage[]
+}
+
+// Admin → Customers (management view)
+export interface AdminCustomer {
+  id: string
+  user_id: string
+  name: string
+  email: string
+  phone: string
+  status: 'active' | 'blocked' | 'suspended' | 'inactive'
+  block_reason: string
+  blocked_at: string | null
+  last_login_at: string | null
+  created_at: string
+  orders_count: number
+  total_spent: number
+}
+
+export interface AdminCustomerOrder {
+  id: string
+  order_number: string
+  status: string
+  payment_method: 'online' | 'cod'
+  grand_total: number
+  created_at: string
+}
+
+export interface AdminCustomerDetail extends AdminCustomer {
+  gender: string
+  email_verified: boolean
+  phone_verified: boolean
+  marketing_opt_in: boolean
+  blocked_by_name: string
+  cancelled_count: number
+  tickets_count: number
+  addresses: Address[]
+  recent_orders: AdminCustomerOrder[]
+}
+
+export interface CustomerBlockReason {
+  code: string
+  label: string
+  note_required: boolean
+}
+
+// Seller → Admin support (a seller asks the CARLITOS team for help).
+export type SellerSupportCategory = 'payments' | 'orders' | 'products' | 'account' | 'technical' | 'other'
+
+export interface SellerSupportTicket {
+  id: string
+  ticket_number: string
+  seller_id: string
+  seller_name: string
+  category: SellerSupportCategory
   subject: string
   description: string
   status: SupportStatus
@@ -584,4 +835,27 @@ export interface Settlement {
   net_payable: number
   status: string
   created_at: string
+}
+
+export interface SettlementSummary {
+  processing_amount: number
+  processing_count: number
+  upcoming_amount: number
+  upcoming_count: number
+  next_payout_date: string | null
+  ready_amount: number
+  ready_count: number
+  paid_amount: number
+  paid_count: number
+  last_paid_at: string | null
+  last_utr: string
+  hold_days: number
+}
+
+export interface SettlementGenerateResult {
+  seller_id: string
+  store_name: string
+  settlement_id?: string
+  net_payable?: number
+  error?: string
 }

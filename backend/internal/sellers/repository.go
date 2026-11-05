@@ -19,7 +19,8 @@ type Repository struct {
 // NewRepository builds a seller Repository.
 func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: pool} }
 
-const sellerCols = `id, user_id, store_name, store_slug, store_description, status,
+const sellerCols = `id, user_id, store_name, store_slug, store_description,
+	coalesce(store_logo_key,''), status,
 	coalesce(legal_business_name,''), coalesce(business_type,''), coalesce(owner_name,''),
 	coalesce(contact_email::text,''), coalesce(contact_phone,''), coalesce(gst_number,''),
 	coalesce(pan_number,''), commission_percent, rating_avg, rating_count,
@@ -31,7 +32,7 @@ const sellerCols = `id, user_id, store_name, store_slug, store_description, stat
 func scanSeller(row pgx.Row) (*Seller, error) {
 	var s Seller
 	err := row.Scan(&s.ID, &s.UserID, &s.StoreName, &s.StoreSlug, &s.StoreDescription,
-		&s.Status, &s.LegalBusinessName, &s.BusinessType, &s.OwnerName, &s.ContactEmail,
+		&s.StoreLogoKey, &s.Status, &s.LegalBusinessName, &s.BusinessType, &s.OwnerName, &s.ContactEmail,
 		&s.ContactPhone, &s.GSTNumber, &s.PANNumber, &s.CommissionPercent,
 		&s.RatingAvg, &s.RatingCount, &s.RejectionReason, &s.SuspendedReason,
 		&s.ResubmitCount, &s.OnboardingDone, &s.ContractSigned, &s.ContractCommission,
@@ -76,11 +77,14 @@ func (r *Repository) UpdateProfile(ctx context.Context, sellerID string, p Profi
 			notify_settlement_emails = $6,
 			notify_low_stock = $7,
 			notify_marketing = $8,
-			cod_enabled = $9
+			cod_enabled = $9,
+			-- $10 is NULL to leave the logo unchanged; '' clears it; any key sets it.
+			store_logo_key = CASE WHEN $10::text IS NULL THEN store_logo_key
+			                      ELSE NULLIF($10::text,'') END
 		WHERE id = $1`,
 		sellerID, p.StoreName, p.StoreDescription,
 		p.NotifyOrderEmails, p.NotifyReturnEmails, p.NotifySettlementEmails,
-		p.NotifyLowStock, p.NotifyMarketing, p.CODEnabled)
+		p.NotifyLowStock, p.NotifyMarketing, p.CODEnabled, p.StoreLogoKeyPtr)
 	if err != nil {
 		return err
 	}
@@ -126,6 +130,33 @@ func (r *Repository) UpdateBusinessInfo(ctx context.Context, sellerID string, s 
 		sellerID, s.LegalBusinessName, s.BusinessType, s.OwnerName,
 		s.ContactEmail, s.ContactPhone, s.GSTNumber, s.PANNumber, s.StoreDescription)
 	return err
+}
+
+// FillMissingBusinessInfo sets business/owner/contact/tax fields ONLY where the
+// stored value is currently empty. A value that is already present is never
+// overwritten, so this is safe to expose even after the store is approved
+// (the seller can add e.g. a missing GST number, but cannot change one that
+// is already on file).
+func (r *Repository) FillMissingBusinessInfo(ctx context.Context, sellerID string, s Seller) error {
+	ct, err := r.pool.Exec(ctx, `
+		UPDATE sellers SET
+			legal_business_name = CASE WHEN coalesce(legal_business_name,'') = '' THEN $2 ELSE legal_business_name END,
+			business_type       = CASE WHEN coalesce(business_type,'') = '' THEN $3 ELSE business_type END,
+			owner_name          = CASE WHEN coalesce(owner_name,'') = '' THEN $4 ELSE owner_name END,
+			contact_email       = CASE WHEN coalesce(contact_email::text,'') = '' THEN NULLIF($5,'')::citext ELSE contact_email END,
+			contact_phone       = CASE WHEN coalesce(contact_phone,'') = '' THEN NULLIF($6,'') ELSE contact_phone END,
+			gst_number          = CASE WHEN coalesce(gst_number,'') = '' THEN NULLIF($7,'') ELSE gst_number END,
+			pan_number          = CASE WHEN coalesce(pan_number,'') = '' THEN NULLIF($8,'') ELSE pan_number END
+		WHERE id = $1`,
+		sellerID, s.LegalBusinessName, s.BusinessType, s.OwnerName,
+		s.ContactEmail, s.ContactPhone, s.GSTNumber, s.PANNumber)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // GetOnboarding returns the onboarding record for a seller.

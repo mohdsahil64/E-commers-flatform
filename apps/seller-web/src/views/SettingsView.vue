@@ -1,27 +1,37 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { RouterLink } from 'vue-router'
-import { Bell, Landmark, MapPin, Save, KeyRound, Eye, EyeOff, Wallet } from 'lucide-vue-next'
-import type { Seller, SellerBankAccount, SellerPickupAddress } from '@carlitos/types'
+import { Bell, Save, KeyRound, Eye, EyeOff, Wallet } from 'lucide-vue-next'
+import type { Seller } from '@carlitos/types'
 import { seller } from '@/api'
 import { extractApiError } from '@carlitos/shared'
 
 const profile = ref<Seller | null>(null)
-const bank = ref<SellerBankAccount | null>(null)
-const pickup = ref<SellerPickupAddress | null>(null)
 const loading = ref(true)
 
-// ── Notification preferences (persisted server-side) ──────────────
-const prefs = ref({
+// ── Notification preferences (persisted server-side, applied instantly) ──
+type PrefKey =
+  | 'notify_order_emails' | 'notify_return_emails' | 'notify_settlement_emails'
+  | 'notify_low_stock' | 'notify_marketing'
+
+const prefs = ref<Record<PrefKey, boolean>>({
   notify_order_emails: true,
   notify_return_emails: true,
   notify_settlement_emails: true,
   notify_low_stock: true,
   notify_marketing: false,
 })
-const savingPrefs = ref(false)
+const PREF_ROWS: { key: PrefKey; label: string; hint: string }[] = [
+  { key: 'notify_order_emails',      label: 'New order emails',          hint: 'Get an email when a customer places an order with you.' },
+  { key: 'notify_return_emails',     label: 'Return & exchange emails',  hint: 'Get an email when a customer raises a return or exchange.' },
+  { key: 'notify_settlement_emails', label: 'Settlement / payout emails', hint: 'Get an email when a payout is sent to your bank account.' },
+  { key: 'notify_low_stock',         label: 'Low stock alerts',          hint: 'Get an email when an order leaves an item at or below its low-stock level.' },
+  { key: 'notify_marketing',         label: 'Marketing & tips',          hint: 'Occasional selling tips and product updates.' },
+]
+// Which preference is currently being saved (disables its switch).
+const savingKey = ref<PrefKey | ''>('')
 const prefsMsg = ref('')
 const prefsErr = ref('')
+let prefsMsgTimer: ReturnType<typeof setTimeout> | undefined
 
 // ── Payment options (Cash on Delivery) ────────────────────────────
 // When COD is off, Cash on Delivery is disabled at checkout for every
@@ -47,11 +57,7 @@ const pwStrong = (s: string) => {
 async function load() {
   loading.value = true
   try {
-    // The onboarding bundle carries the seller + saved bank + pickup in one call.
-    const bundle = await seller.onboarding().catch(() => null)
-    profile.value = bundle?.seller ?? await seller.profile().catch(() => null)
-    bank.value = bundle?.bank ?? null
-    pickup.value = bundle?.pickup ?? null
+    profile.value = await seller.profile().catch(() => null)
     if (profile.value) {
       prefs.value = {
         notify_order_emails: profile.value.notify_order_emails,
@@ -91,33 +97,33 @@ async function saveCod() {
   }
 }
 
-// Mask an account number, showing only the last 4 digits.
-function maskAccount(n?: string) {
-  if (!n) return '—'
-  return n.length <= 4 ? n : '•••• ' + n.slice(-4)
-}
-function pickupLine(a: SellerPickupAddress) {
-  return [a.line1, a.line2, a.city, a.state, a.pincode].filter(Boolean).join(', ')
-}
-
-async function savePrefs() {
-  if (!profile.value) return
-  prefsErr.value = ''; prefsMsg.value = ''; savingPrefs.value = true
+// Flip one notification switch and save it immediately. If the save fails the
+// switch snaps back, so what the seller sees is always what the server has.
+async function togglePref(key: PrefKey) {
+  if (!profile.value || savingKey.value) return
+  const next = !prefs.value[key]
+  const previous = prefs.value[key]
+  prefs.value[key] = next
+  savingKey.value = key
+  prefsErr.value = ''; prefsMsg.value = ''
+  clearTimeout(prefsMsgTimer)
   try {
     const updated = await seller.updateProfile({
-      // Preserve store fields + COD flag; only notification prefs change here.
+      // Preserve store fields + COD flag; only the notification prefs change.
       store_name: profile.value.store_name,
       store_description: profile.value.store_description,
       ...prefs.value,
       cod_enabled: codEnabled.value,
     })
     profile.value = updated
-    prefsMsg.value = 'Preferences saved.'
-    setTimeout(() => { prefsMsg.value = '' }, 2500)
+    const row = PREF_ROWS.find(r => r.key === key)
+    prefsMsg.value = `${row?.label ?? 'Preference'} turned ${next ? 'ON' : 'OFF'}.`
+    prefsMsgTimer = setTimeout(() => { prefsMsg.value = '' }, 2500)
   } catch (e) {
+    prefs.value[key] = previous
     prefsErr.value = extractApiError(e)
   } finally {
-    savingPrefs.value = false
+    savingKey.value = ''
   }
 }
 
@@ -159,39 +165,44 @@ onMounted(load)
     </div>
 
     <template v-else>
-      <!-- Notifications -->
+      <!-- Notifications: each switch saves instantly -->
       <section class="card p-6 mb-5">
-        <div class="flex items-center gap-2 mb-4">
+        <div class="flex items-center gap-2 mb-1">
           <Bell :size="18" class="text-stone-500" />
           <h2 class="text-h4">Notifications</h2>
         </div>
-        <div class="space-y-3">
-          <label class="flex items-center justify-between cursor-pointer">
-            <span class="text-sm text-stone-700">New order emails</span>
-            <input v-model="prefs.notify_order_emails" type="checkbox" class="h-4 w-4 accent-ink" />
-          </label>
-          <label class="flex items-center justify-between cursor-pointer">
-            <span class="text-sm text-stone-700">Return &amp; exchange emails</span>
-            <input v-model="prefs.notify_return_emails" type="checkbox" class="h-4 w-4 accent-ink" />
-          </label>
-          <label class="flex items-center justify-between cursor-pointer">
-            <span class="text-sm text-stone-700">Settlement / payout emails</span>
-            <input v-model="prefs.notify_settlement_emails" type="checkbox" class="h-4 w-4 accent-ink" />
-          </label>
-          <label class="flex items-center justify-between cursor-pointer">
-            <span class="text-sm text-stone-700">Low stock alerts</span>
-            <input v-model="prefs.notify_low_stock" type="checkbox" class="h-4 w-4 accent-ink" />
-          </label>
-          <label class="flex items-center justify-between cursor-pointer">
-            <span class="text-sm text-stone-700">Marketing &amp; tips</span>
-            <input v-model="prefs.notify_marketing" type="checkbox" class="h-4 w-4 accent-ink" />
-          </label>
-        </div>
-        <p v-if="prefsMsg" class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">{{ prefsMsg }}</p>
-        <p v-if="prefsErr" class="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-600">{{ prefsErr }}</p>
-        <button class="btn-primary mt-4" :disabled="savingPrefs" @click="savePrefs">
-          <Save :size="15" /> {{ savingPrefs ? 'Saving…' : 'Save preferences' }}
-        </button>
+        <p class="mb-4 text-xs text-stone-500">Emails go to your store's contact email. Changes apply immediately.</p>
+
+        <ul class="divide-y divide-stone-100">
+          <li v-for="row in PREF_ROWS" :key="row.key" class="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+            <div class="min-w-0">
+              <p :id="`pref-${row.key}`" class="text-sm font-medium text-stone-800">{{ row.label }}</p>
+              <p class="mt-0.5 text-xs text-stone-500">{{ row.hint }}</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              :aria-checked="prefs[row.key]"
+              :aria-labelledby="`pref-${row.key}`"
+              :disabled="!!savingKey"
+              :class="[
+                'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ink focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60',
+                prefs[row.key] ? 'bg-ink' : 'bg-stone-300',
+              ]"
+              @click="togglePref(row.key)"
+            >
+              <span
+                :class="[
+                  'inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform',
+                  prefs[row.key] ? 'translate-x-5' : 'translate-x-0.5',
+                ]"
+              />
+            </button>
+          </li>
+        </ul>
+
+        <p v-if="prefsMsg" class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700" role="status">{{ prefsMsg }}</p>
+        <p v-if="prefsErr" class="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-600" role="alert">{{ prefsErr }}</p>
       </section>
 
       <!-- Payment options: Cash on Delivery -->
@@ -249,46 +260,6 @@ onMounted(load)
           <KeyRound :size="15" /> {{ savingPw ? 'Updating…' : 'Update password' }}
         </button>
       </section>
-
-      <!-- Store details: bank + pickup (read-only; locked after submission) -->
-      <section class="grid gap-4 sm:grid-cols-2">
-        <div class="card p-5">
-          <div class="flex items-center gap-2 mb-3">
-            <Landmark :size="18" class="text-stone-500" />
-            <h3 class="text-sm font-semibold">Bank Account</h3>
-          </div>
-          <dl v-if="bank" class="space-y-1.5 text-xs">
-            <div class="flex justify-between gap-2"><dt class="text-stone-400">Holder</dt><dd class="font-medium text-ink">{{ bank.account_holder }}</dd></div>
-            <div class="flex justify-between gap-2"><dt class="text-stone-400">Account</dt><dd class="font-medium text-ink">{{ maskAccount(bank.account_number) }}</dd></div>
-            <div class="flex justify-between gap-2"><dt class="text-stone-400">IFSC</dt><dd class="font-medium text-ink">{{ bank.ifsc }}</dd></div>
-          </dl>
-          <p v-else class="text-xs text-stone-500">Not added yet.</p>
-          <p class="mt-3 text-xs text-stone-400">Used for settlement payouts.</p>
-        </div>
-
-        <div class="card p-5">
-          <div class="flex items-center gap-2 mb-3">
-            <MapPin :size="18" class="text-stone-500" />
-            <h3 class="text-sm font-semibold">Pickup Address</h3>
-          </div>
-          <dl v-if="pickup" class="space-y-1.5 text-xs">
-            <div class="flex justify-between gap-2"><dt class="text-stone-400">Contact</dt><dd class="font-medium text-ink text-right">{{ pickup.contact_name }}</dd></div>
-            <div class="flex justify-between gap-2"><dt class="text-stone-400">Phone</dt><dd class="font-medium text-ink">{{ pickup.contact_phone }}</dd></div>
-            <div><dt class="text-stone-400 mb-0.5">Address</dt><dd class="text-ink leading-snug">{{ pickupLine(pickup) }}</dd></div>
-          </dl>
-          <p v-else class="text-xs text-stone-500">Not added yet.</p>
-          <p class="mt-3 text-xs text-stone-400">Where couriers collect your orders.</p>
-        </div>
-      </section>
-
-      <!-- If still editable (pending/rejected), allow updating via onboarding. -->
-      <p v-if="profile && ['pending','rejected'].includes(profile.status)" class="mt-4 text-center text-xs text-stone-500">
-        Need to change bank or pickup details?
-        <RouterLink to="/onboarding" class="underline">Update in onboarding</RouterLink>.
-      </p>
-      <p v-else class="mt-4 text-center text-xs text-stone-400">
-        Bank &amp; pickup details are locked after your store is submitted. Contact support to change them.
-      </p>
     </template>
   </div>
 </template>

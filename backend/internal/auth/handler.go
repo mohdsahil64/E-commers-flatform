@@ -64,7 +64,11 @@ func (h *Handler) Register(auth fiber.Router) {
 	// Seller & admin remain email/password.
 	auth.Post("/seller/register", h.registerSeller)
 	auth.Post("/seller/login", h.loginFor("seller"))
-	auth.Post("/admin/login", h.loginFor("admin"))
+	auth.Post("/admin/login", h.adminLogin)
+	// First-login setup for invited employees (temporary password -> emailed
+	// code + new password). See staff_setup.go.
+	auth.Post("/admin/setup/verify", h.adminSetupVerify)
+	auth.Post("/admin/setup/resend", h.adminSetupResend)
 	// Forgot / reset password (email-password portals only).
 	auth.Post("/seller/forgot-password", h.forgotPasswordFor("seller"))
 	auth.Post("/admin/forgot-password", h.forgotPasswordFor("admin"))
@@ -269,6 +273,65 @@ func (h *Handler) loginFor(accountType string) fiber.Handler {
 		}
 		return httpx.OK(c, pair)
 	}
+}
+
+// adminLogin signs an admin-portal user in. For an invited employee on their
+// temporary password it returns {setup_required: true, setup_token, ...}
+// INSTEAD of tokens, so the temporary password alone never grants a session.
+func (h *Handler) adminLogin(c *fiber.Ctx) error {
+	var body loginBody
+	if err := c.BodyParser(&body); err != nil {
+		return httpx.BadRequest("invalid_body", "Invalid request body")
+	}
+	if strings.TrimSpace(body.Email) == "" || body.Password == "" {
+		return httpx.BadRequest("validation_failed", "Email and password are required")
+	}
+	ua, ip := clientMeta(c)
+	res, err := h.svc.LoginAdmin(c.Context(), body.Email, body.Password, ua, ip)
+	if err != nil {
+		return err
+	}
+	if res.Setup != nil {
+		return httpx.OK(c, res.Setup)
+	}
+	return httpx.OK(c, res.Tokens)
+}
+
+type setupVerifyBody struct {
+	SetupToken  string `json:"setup_token"`
+	Code        string `json:"code"`
+	NewPassword string `json:"new_password"`
+}
+
+type setupResendBody struct {
+	SetupToken string `json:"setup_token"`
+}
+
+func (h *Handler) adminSetupVerify(c *fiber.Ctx) error {
+	var body setupVerifyBody
+	if err := c.BodyParser(&body); err != nil {
+		return httpx.BadRequest("invalid_body", "Invalid request body")
+	}
+	if strings.TrimSpace(body.SetupToken) == "" || strings.TrimSpace(body.Code) == "" || body.NewPassword == "" {
+		return httpx.BadRequest("validation_failed", "Verification code and new password are required")
+	}
+	ua, ip := clientMeta(c)
+	pair, err := h.svc.CompleteStaffSetup(c.Context(), body.SetupToken, body.Code, body.NewPassword, ua, ip)
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, pair)
+}
+
+func (h *Handler) adminSetupResend(c *fiber.Ctx) error {
+	var body setupResendBody
+	if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.SetupToken) == "" {
+		return httpx.BadRequest("invalid_body", "setup_token is required")
+	}
+	if err := h.svc.ResendStaffSetupCode(c.Context(), body.SetupToken); err != nil {
+		return err
+	}
+	return httpx.OK(c, fiber.Map{"sent": true})
 }
 
 func (h *Handler) refresh(c *fiber.Ctx) error {

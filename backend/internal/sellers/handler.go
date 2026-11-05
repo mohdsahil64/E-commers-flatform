@@ -21,6 +21,7 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 func (h *Handler) RegisterSeller(r fiber.Router) {
 	r.Get("/profile", h.profile)
 	r.Put("/profile", h.updateProfile)
+	r.Put("/profile/business", h.fillBusiness)
 	r.Post("/change-password", h.changePassword)
 	r.Get("/onboarding", h.getOnboarding)
 	// Structured onboarding steps that persist real data.
@@ -35,7 +36,8 @@ func (h *Handler) RegisterSeller(r fiber.Router) {
 
 // RegisterAdmin mounts admin seller-management routes.
 func (h *Handler) RegisterAdmin(r fiber.Router) {
-	r.Get("/sellers", auth.RequirePermission(auth.PermSellerView), h.adminList)
+	// The Reports page also reads this list, so reports.view may list sellers.
+	r.Get("/sellers", auth.RequireAnyPermission(auth.PermSellerView, auth.PermReportsView), h.adminList)
 	r.Get("/sellers/:id", auth.RequirePermission(auth.PermSellerView), h.adminGet)
 	r.Post("/sellers/:id/approve", auth.RequirePermission(auth.PermSellerApprove), h.adminApprove)
 	r.Post("/sellers/:id/reject", auth.RequirePermission(auth.PermSellerReject), h.adminReject)
@@ -68,6 +70,9 @@ type profileUpdateBody struct {
 	// CODEnabled is a pointer so a client that omits it leaves the current
 	// setting untouched (only an explicit true/false changes it).
 	CODEnabled *bool `json:"cod_enabled"`
+	// StoreLogoKey is a pointer so a client that omits it leaves the current
+	// logo untouched; "" clears it and any key sets it.
+	StoreLogoKey *string `json:"store_logo_key"`
 }
 
 func (h *Handler) updateProfile(c *fiber.Ctx) error {
@@ -88,6 +93,40 @@ func (h *Handler) updateProfile(c *fiber.Ctx) error {
 		NotifyLowStock:         body.NotifyLowStock,
 		NotifyMarketing:        body.NotifyMarketing,
 		CODEnabledPtr:          body.CODEnabled,
+		StoreLogoKeyPtr:        body.StoreLogoKey,
+	})
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, seller)
+}
+
+type fillBusinessBody struct {
+	LegalBusinessName string `json:"legal_business_name"`
+	BusinessType      string `json:"business_type"`
+	OwnerName         string `json:"owner_name"`
+	ContactEmail      string `json:"contact_email"`
+	ContactPhone      string `json:"contact_phone"`
+	GSTNumber         string `json:"gst_number"`
+	PANNumber         string `json:"pan_number"`
+}
+
+// fillBusiness adds business details that are still missing. Existing values
+// are never overwritten (enforced in the repository), so it is allowed in any
+// seller status.
+func (h *Handler) fillBusiness(c *fiber.Ctx) error {
+	sellerID, err := h.currentSellerID(c)
+	if err != nil {
+		return err
+	}
+	var body fillBusinessBody
+	if err := c.BodyParser(&body); err != nil {
+		return httpx.BadRequest("invalid_body", "Invalid request body")
+	}
+	seller, err := h.svc.FillBusinessInfo(c.Context(), sellerID, Seller{
+		LegalBusinessName: body.LegalBusinessName, BusinessType: body.BusinessType,
+		OwnerName: body.OwnerName, ContactEmail: body.ContactEmail,
+		ContactPhone: body.ContactPhone, GSTNumber: body.GSTNumber, PANNumber: body.PANNumber,
 	})
 	if err != nil {
 		return err

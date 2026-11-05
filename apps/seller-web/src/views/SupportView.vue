@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, nextTick } from 'vue'
+import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
 import { LifeBuoy, Package, Send, CheckCircle2, X } from 'lucide-vue-next'
-import type { SupportTicket } from '@carlitos/types'
-import { seller, MEDIA_BASE } from '@/api'
-import { formatDate, resolveMediaUrl, extractApiError } from '@carlitos/shared'
+import type { SupportTicket, SupportMessage, SupportSocketEvent } from '@carlitos/types'
+import { seller, MEDIA_BASE, api, tokenStore } from '@/api'
+import { formatDate, resolveMediaUrl, extractApiError, connectSupportSocket } from '@carlitos/shared'
 
 const tickets = ref<SupportTicket[]>([])
 const loading = ref(true)
@@ -17,13 +17,45 @@ const busy = ref('')
 const resolveTarget = ref<SupportTicket | null>(null)
 const resolution = ref('')
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  if (!silent) loading.value = true
   try { tickets.value = await seller.supportTickets() }
-  catch { tickets.value = [] }
+  catch { if (!silent) tickets.value = [] }
   finally { loading.value = false }
 }
-onMounted(load)
+
+/* ── Live updates (WebSocket) ──────────────────────────────────── */
+let socket: { close: () => void } | null = null
+
+function applyMessage(ticketId: string, msg: SupportMessage, status?: SupportTicket['status']) {
+  const t = tickets.value.find(x => x.id === ticketId)
+  if (!t) return
+  if (!t.messages.some(m => m.id === msg.id)) t.messages.push(msg)
+  if (status) t.status = status
+  nextTick(() => scrollTimeline(ticketId))
+}
+
+function handleSocketEvent(ev: SupportSocketEvent) {
+  if (ev.scope) return // seller → admin ticket events belong to the Admin Support page
+  if (ev.type === 'ticket_changed') { load(true); return }
+  if (!ev.message) return
+  if (!tickets.value.some(t => t.id === ev.ticket_id)) { load(true); return }
+  applyMessage(ev.ticket_id, ev.message, ev.status)
+}
+
+onMounted(() => {
+  load()
+  socket = connectSupportSocket<SupportSocketEvent>({
+    baseURL: api.http.defaults.baseURL || '',
+    getToken: () => tokenStore.getAccess(),
+    onEvent: handleSocketEvent,
+    onOpen: (reconnected) => { if (reconnected) load(true) },
+    beforeReconnect: async () => { await seller.supportTickets() },
+  })
+})
+onBeforeUnmount(() => socket?.close())
+
+
 
 const filtered = computed(() =>
   filter.value === 'all' ? tickets.value : tickets.value.filter(t => t.status === filter.value),
@@ -37,10 +69,9 @@ async function sendReply(t: SupportTicket) {
   if (!body) return
   busy.value = t.id; error.value = ''; message.value = ''
   try {
-    await seller.replySupportTicket(t.id, body)
+    const msg = await seller.replySupportTicket(t.id, body)
     drafts.value[t.id] = ''
-    await load()
-    nextTick(() => scrollTimeline(t.id))
+    if (msg?.id) applyMessage(t.id, msg)
   } catch (e) { error.value = extractApiError(e) }
   finally { busy.value = '' }
 }
@@ -85,7 +116,7 @@ function authorLabel(role: string, t: SupportTicket) {
 <template>
   <div>
     <div class="page-header">
-      <h1 class="page-title">Help &amp; Support</h1>
+      <h1 class="page-title">Customer Issues</h1>
       <p class="text-sm text-stone-500">
         {{ counts.open }} open · Customer issues about your products. Reply and mark solved when done.
       </p>
@@ -173,7 +204,16 @@ function authorLabel(role: string, t: SupportTicket) {
                           ? 'rounded-bl-sm bg-stone-100 text-stone-500 text-xs italic'
                           : 'rounded-bl-sm bg-stone-100 text-ink')"
                   >
-                    {{ m.body }}
+                    <a v-if="m.image_key" :href="resolveMediaUrl(MEDIA_BASE, m.image_key)" target="_blank" rel="noopener" class="block">
+                      <img
+                        :src="resolveMediaUrl(MEDIA_BASE, m.image_key)"
+                        alt="Shared photo"
+                        class="max-h-48 w-full rounded-lg object-cover"
+                        :class="m.body ? 'mb-1.5' : ''"
+                        loading="lazy"
+                      />
+                    </a>
+                    <template v-if="m.body">{{ m.body }}</template>
                   </div>
                 </div>
               </div>

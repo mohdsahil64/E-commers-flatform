@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
 import { Wallet, Plus, Download } from 'lucide-vue-next'
-import type { Settlement } from '@carlitos/types'
+import type { Settlement, SettlementGenerateResult } from '@carlitos/types'
 import { admin } from '@/api'
 import { formatINR, formatDate, extractApiError } from '@carlitos/shared'
 
@@ -12,6 +12,8 @@ const sellerID    = ref('')
 const error       = ref('')
 const message     = ref('')
 const showGen     = ref(false)
+const generatingAll = ref(false)
+const allResults  = ref<SettlementGenerateResult[] | null>(null)
 
 async function load() {
   settlements.value = await admin.settlements().catch(() => [])
@@ -27,6 +29,18 @@ async function generate() {
     showGen.value = false
     await load()
   } catch (e) { error.value = extractApiError(e) } finally { generating.value = false }
+}
+
+async function generateAll() {
+  error.value = ''; message.value = ''; allResults.value = null; generatingAll.value = true
+  try {
+    allResults.value = (await admin.generateAllSettlements()) ?? []
+    const ok = allResults.value.filter(r => r.settlement_id).length
+    message.value = allResults.value.length
+      ? `Created ${ok} of ${allResults.value.length} payouts`
+      : 'No seller has items ready for payout yet (items are paid 7 days after delivery)'
+    await load()
+  } catch (e) { error.value = extractApiError(e) } finally { generatingAll.value = false }
 }
 
 const totalNet = computed(() => settlements.value.reduce((a, s) => a + s.net_payable, 0))
@@ -46,7 +60,25 @@ onMounted(async () => { await load(); loading.value = false })
   <div>
     <div class="page-header">
       <h1 class="page-title">Settlements</h1>
-      <button class="btn-primary" @click="showGen = !showGen"><Plus :size="15" /> Generate Settlement</button>
+      <div class="flex flex-wrap gap-2">
+        <button class="btn-primary" :disabled="generatingAll" @click="generateAll">
+          {{ generatingAll ? 'Generating…' : 'Generate payouts for all sellers' }}
+        </button>
+        <button class="btn-ghost" @click="showGen = !showGen"><Plus :size="15" /> Generate Settlement</button>
+      </div>
+    </div>
+
+    <!-- Generate-all result -->
+    <div v-if="message || error || allResults" class="card p-4 mb-5">
+      <p v-if="message" class="text-sm text-emerald-600">{{ message }}</p>
+      <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
+      <ul v-if="allResults?.length" class="mt-2 space-y-1 text-sm">
+        <li v-for="r in allResults" :key="r.seller_id" class="flex flex-wrap justify-between gap-2">
+          <span class="font-medium">{{ r.store_name }}</span>
+          <span v-if="r.settlement_id" class="text-emerald-600">{{ formatINR(r.net_payable ?? 0) }} created</span>
+          <span v-else class="text-red-600">Skipped: {{ r.error }}</span>
+        </li>
+      </ul>
     </div>
 
     <!-- Generate form -->
@@ -59,8 +91,6 @@ onMounted(async () => { await load(); loading.value = false })
         </div>
         <button class="btn-primary" :disabled="generating || !sellerID">{{ generating ? 'Generating…' : 'Generate' }}</button>
       </form>
-      <p v-if="message" class="mt-3 text-sm text-emerald-600">{{ message }}</p>
-      <p v-if="error"   class="mt-3 text-sm text-red-600">{{ error }}</p>
     </div>
 
     <!-- Summary -->

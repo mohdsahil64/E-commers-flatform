@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Boxes, Search, X, Loader2, Check } from 'lucide-vue-next'
+import { Boxes, Search, X, Loader2, Check, Plus } from 'lucide-vue-next'
 import type { Product, Variant } from '@carlitos/types'
 import { seller, MEDIA_BASE } from '@/api'
 import { formatINR, resolveMediaUrl, extractApiError } from '@carlitos/shared'
@@ -72,21 +72,30 @@ async function openStock(p: Product) {
   popupErr.value = ''
   popupOk.value = ''
   sizeInputs.value = {}
+  newSize.value = ''
+  newQty.value = null
   detailLoading.value = true
   try {
-    const full = await seller.product(p.id)
-    detail.value = full
-    // Key inputs by variant id (works even if seller_listing_id isn't present).
-    const map: Record<string, number> = {}
-    for (const v of (full.variants || [])) {
-      map[v.id] = v.available_quantity ?? 0
-    }
-    sizeInputs.value = map
+    applyDetail(await seller.product(p.id))
   } catch (e) {
     popupErr.value = extractApiError(e)
   } finally {
     detailLoading.value = false
   }
+}
+// Store the freshly loaded product and (re)build the per-size inputs. Inputs
+// are keyed by variant id (works even if seller_listing_id isn't present) and
+// the list row's total stock is kept in sync.
+function applyDetail(full: Product) {
+  detail.value = full
+  const map: Record<string, number> = {}
+  for (const v of (full.variants || [])) {
+    map[v.id] = v.available_quantity ?? 0
+  }
+  sizeInputs.value = map
+  const total = (full.variants || []).reduce((a, x) => a + (x.available_quantity ?? 0), 0)
+  const row = products.value.find(p => p.id === full.id)
+  if (row) row.available_quantity = total
 }
 function closeStock() {
   editing.value = null
@@ -94,6 +103,51 @@ function closeStock() {
   savingId.value = ''
   popupErr.value = ''
   popupOk.value = ''
+  newSize.value = ''
+  newQty.value = null
+}
+
+// ── Add a new size ─────────────────────────────────────────────
+const newSize    = ref('')
+const newQty     = ref<number | null>(null)
+const addingSize = ref(false)
+
+const APPAREL_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL']
+const WAIST_SIZES   = ['28', '30', '32', '34', '36', '38', '40', '42']
+const SHOE_SIZES    = ['5', '6', '7', '8', '9', '10', '11', '12']
+
+// One-tap suggestions: the usual size set for this kind of product (guessed
+// from the sizes it already has), minus sizes that already exist.
+const suggestedSizes = computed(() => {
+  const have = new Set((detail.value?.variants || []).map(v => sizeLabel(v).toUpperCase()))
+  const numeric = [...have].filter(l => /^\d+$/.test(l)).map(Number)
+  let pool = APPAREL_SIZES
+  if (numeric.length) pool = numeric.every(n => n <= 15) ? SHOE_SIZES : WAIST_SIZES
+  return pool.filter(s => !have.has(s.toUpperCase()))
+})
+
+async function addSize() {
+  const p = editing.value
+  if (!p) return
+  const size = newSize.value.trim()
+  const qty = Number(newQty.value ?? 0)
+  popupErr.value = ''
+  popupOk.value = ''
+  if (!size) { popupErr.value = 'Enter a size (for example 42 or XL).'; return }
+  if (!Number.isFinite(qty) || qty < 0) { popupErr.value = 'Enter a valid quantity (0 or more).'; return }
+  addingSize.value = true
+  try {
+    await seller.addProductSize(p.id, size, Math.floor(qty))
+    applyDetail(await seller.product(p.id))
+    popupOk.value = `Size ${size} added with ${Math.floor(qty)} pcs.`
+    newSize.value = ''
+    newQty.value = null
+    setTimeout(() => { popupOk.value = '' }, 2200)
+  } catch (e) {
+    popupErr.value = extractApiError(e)
+  } finally {
+    addingSize.value = false
+  }
 }
 
 async function saveSize(v: Variant) {
@@ -266,6 +320,41 @@ async function saveSize(v: Variant) {
           </div>
 
           <p v-else-if="detail" class="text-sm text-stone-500">No sizes found for this product.</p>
+
+          <!-- Add a brand-new size with its opening stock -->
+          <div v-if="detail" class="mt-4 border-t border-stone-100 pt-4">
+            <p class="mb-2 text-xs font-medium text-ink">Add a new size</p>
+            <div v-if="suggestedSizes.length" class="mb-2 flex flex-wrap gap-1.5">
+              <button
+                v-for="s in suggestedSizes" :key="s" type="button"
+                :class="['rounded-md border px-2.5 py-1 text-xs font-medium transition-colors', newSize.trim().toUpperCase() === s.toUpperCase() ? 'border-ink bg-ink text-white' : 'border-stone-300 text-stone-600 hover:border-stone-500']"
+                @click="newSize = s"
+              >{{ s }}</button>
+            </div>
+            <div class="flex items-center gap-2">
+              <input
+                v-model="newSize"
+                type="text" maxlength="20"
+                class="input w-20 shrink-0 text-center"
+                placeholder="Size"
+                aria-label="New size"
+                @keyup.enter="addSize"
+              />
+              <input
+                v-model.number="newQty"
+                type="number" min="0" inputmode="numeric"
+                class="input flex-1"
+                placeholder="Quantity"
+                aria-label="Quantity for the new size"
+                @keyup.enter="addSize"
+              />
+              <button class="btn-primary btn-sm shrink-0" :disabled="addingSize" @click="addSize">
+                <Loader2 v-if="addingSize" :size="14" class="animate-spin" />
+                <Plus v-else :size="14" /> Add
+              </button>
+            </div>
+            <p class="mt-1.5 text-[11px] text-stone-400">Type a size like 42, M or XL, or tap one above. Price is copied from this product.</p>
+          </div>
 
           <p v-if="popupErr" class="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{{ popupErr }}</p>
           <p v-if="popupOk" class="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">{{ popupOk }}</p>

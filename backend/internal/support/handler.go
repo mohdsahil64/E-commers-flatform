@@ -32,6 +32,11 @@ func (h *Handler) RegisterSeller(r fiber.Router) {
 	r.Get("/support/tickets", h.sellerList)
 	r.Post("/support/tickets/:id/messages", h.sellerReply)
 	r.Post("/support/tickets/:id/resolve", h.sellerResolve)
+
+	// Seller -> Admin: the seller asks the CARLITOS team for help.
+	r.Get("/support/admin-tickets", h.sellerAdminList)
+	r.Post("/support/admin-tickets", h.sellerAdminOpen)
+	r.Post("/support/admin-tickets/:id/messages", h.sellerAdminReply)
 }
 
 // RegisterAdmin mounts admin support routes behind the support.manage
@@ -41,6 +46,11 @@ func (h *Handler) RegisterAdmin(r fiber.Router) {
 	r.Get("/support/tickets", auth.RequirePermission(auth.PermSupportManage), h.adminList)
 	r.Post("/support/tickets/:id/messages", auth.RequirePermission(auth.PermSupportManage), h.adminReply)
 	r.Post("/support/tickets/:id/resolve", auth.RequirePermission(auth.PermSupportManage), h.adminResolve)
+
+	// Seller -> Admin tickets (requests raised by sellers).
+	r.Get("/support/seller-tickets", auth.RequirePermission(auth.PermSupportManage), h.adminSellerList)
+	r.Post("/support/seller-tickets/:id/messages", auth.RequirePermission(auth.PermSupportManage), h.adminSellerReply)
+	r.Post("/support/seller-tickets/:id/resolve", auth.RequirePermission(auth.PermSupportManage), h.adminSellerResolve)
 }
 
 // ---- customer ----
@@ -81,19 +91,21 @@ func (h *Handler) customerList(c *fiber.Ctx) error {
 }
 
 type replyBody struct {
-	Body string `json:"body"`
+	Body     string `json:"body"`
+	ImageKey string `json:"image_key"`
 }
 
 func (h *Handler) customerReply(c *fiber.Ctx) error {
 	var b replyBody
 	_ = c.BodyParser(&b)
-	if err := h.svc.Reply(c.Context(), ReplyInput{
+	msg, err := h.svc.Reply(c.Context(), ReplyInput{
 		TicketID: c.Params("id"), UserID: auth.From(c).UserID,
-		AuthorRole: "customer", Body: b.Body,
-	}); err != nil {
+		AuthorRole: "customer", Body: b.Body, ImageKey: b.ImageKey,
+	})
+	if err != nil {
 		return err
 	}
-	return httpx.Message(c, "Reply sent")
+	return httpx.OK(c, msg)
 }
 
 // ---- seller ----
@@ -125,13 +137,14 @@ func (h *Handler) sellerReply(c *fiber.Ctx) error {
 	}
 	var b replyBody
 	_ = c.BodyParser(&b)
-	if err := h.svc.Reply(c.Context(), ReplyInput{
+	msg, err := h.svc.Reply(c.Context(), ReplyInput{
 		TicketID: c.Params("id"), UserID: auth.From(c).UserID,
-		AuthorRole: "seller", Body: b.Body, SellerID: sellerID,
-	}); err != nil {
+		AuthorRole: "seller", Body: b.Body, ImageKey: b.ImageKey, SellerID: sellerID,
+	})
+	if err != nil {
 		return err
 	}
-	return httpx.Message(c, "Reply sent")
+	return httpx.OK(c, msg)
 }
 
 type resolveBody struct {
@@ -167,13 +180,14 @@ func (h *Handler) adminList(c *fiber.Ctx) error {
 func (h *Handler) adminReply(c *fiber.Ctx) error {
 	var b replyBody
 	_ = c.BodyParser(&b)
-	if err := h.svc.Reply(c.Context(), ReplyInput{
+	msg, err := h.svc.Reply(c.Context(), ReplyInput{
 		TicketID: c.Params("id"), UserID: auth.From(c).UserID,
-		AuthorRole: "admin", Body: b.Body,
-	}); err != nil {
+		AuthorRole: "admin", Body: b.Body, ImageKey: b.ImageKey,
+	})
+	if err != nil {
 		return err
 	}
-	return httpx.Message(c, "Reply sent")
+	return httpx.OK(c, msg)
 }
 
 func (h *Handler) adminResolve(c *fiber.Ctx) error {
@@ -183,6 +197,88 @@ func (h *Handler) adminResolve(c *fiber.Ctx) error {
 		TicketID: c.Params("id"), UserID: auth.From(c).UserID,
 		AuthorRole: "admin", Resolution: b.Resolution,
 	}); err != nil {
+		return err
+	}
+	return httpx.Message(c, "Ticket marked solved")
+}
+
+// ---- seller -> admin (seller side) ----
+
+func (h *Handler) sellerAdminList(c *fiber.Ctx) error {
+	sellerID, err := h.sellerFromCtx(c)
+	if err != nil {
+		return err
+	}
+	items, err := h.svc.ListSellerTicketsForSeller(c.Context(), sellerID)
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, items)
+}
+
+func (h *Handler) sellerAdminOpen(c *fiber.Ctx) error {
+	sellerID, err := h.sellerFromCtx(c)
+	if err != nil {
+		return err
+	}
+	var b openBody
+	if err := c.BodyParser(&b); err != nil {
+		return httpx.BadRequest("validation_failed", "Invalid request body")
+	}
+	id, err := h.svc.OpenSellerTicket(c.Context(), SellerOpenInput{
+		SellerID: sellerID, UserID: auth.From(c).UserID,
+		Category: b.Category, Subject: b.Subject, Description: b.Description, PhotoKeys: b.PhotoKeys,
+	})
+	if err != nil {
+		return err
+	}
+	return httpx.Created(c, fiber.Map{"id": id})
+}
+
+func (h *Handler) sellerAdminReply(c *fiber.Ctx) error {
+	sellerID, err := h.sellerFromCtx(c)
+	if err != nil {
+		return err
+	}
+	var b replyBody
+	_ = c.BodyParser(&b)
+	msg, err := h.svc.ReplySellerTicket(c.Context(), SellerReplyInput{
+		TicketID: c.Params("id"), UserID: auth.From(c).UserID, AuthorRole: "seller",
+		SellerID: sellerID, Body: b.Body, ImageKey: b.ImageKey,
+	})
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, msg)
+}
+
+// ---- seller -> admin (admin side) ----
+
+func (h *Handler) adminSellerList(c *fiber.Ctx) error {
+	items, err := h.svc.ListSellerTicketsForAdmin(c.Context(), c.Query("status"))
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, items)
+}
+
+func (h *Handler) adminSellerReply(c *fiber.Ctx) error {
+	var b replyBody
+	_ = c.BodyParser(&b)
+	msg, err := h.svc.ReplySellerTicket(c.Context(), SellerReplyInput{
+		TicketID: c.Params("id"), UserID: auth.From(c).UserID, AuthorRole: "admin",
+		Body: b.Body, ImageKey: b.ImageKey,
+	})
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, msg)
+}
+
+func (h *Handler) adminSellerResolve(c *fiber.Ctx) error {
+	var b resolveBody
+	_ = c.BodyParser(&b)
+	if err := h.svc.ResolveSellerTicket(c.Context(), c.Params("id"), auth.From(c).UserID, b.Resolution); err != nil {
 		return err
 	}
 	return httpx.Message(c, "Ticket marked solved")

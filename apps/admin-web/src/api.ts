@@ -33,3 +33,17 @@ api.http.interceptors.response.use(
   (res) => { loader()?.end(); return res },
   (err) => { loader()?.end(); return Promise.reject(err) },
 )
+
+// If the server says this account has been disabled (or must finish its
+// first-login setup), the session is no longer valid even though the token has
+// not expired yet — drop it and send the person to the sign-in page.
+api.http.interceptors.response.use(undefined, (err) => {
+  const code = err?.response?.data?.error?.code
+  if (err?.response?.status === 403 && (code === 'account_inactive' || code === 'password_change_required')) {
+    tokenStore.clear()
+    if (typeof window !== 'undefined' && !window.location.pathname.endsWith('/login')) {
+      window.location.assign('/admin/login?reason=' + encodeURIComponent(code))
+    }
+  }
+  return Promise.reject(err)
+})

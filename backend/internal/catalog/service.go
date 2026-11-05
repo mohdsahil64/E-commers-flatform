@@ -382,6 +382,99 @@ func (s *Service) SetStock(ctx context.Context, productID, sellerID, listingID s
 	return err
 }
 
+// AddSize adds a brand-new size (variant + seller listing + inventory row) with
+// an opening stock to an existing product the seller owns. Price (MRP, selling
+// price, discount) is copied from the product's primary listing so every size
+// stays consistently priced. Ownership is enforced by requiring that the seller
+// already has a listing on the product, and a size that already exists on the
+// product (case-insensitive) is rejected. Everything runs in one transaction.
+func (s *Service) AddSize(ctx context.Context, productID, sellerID, size string, qty int) error {
+	label := strings.TrimSpace(size)
+	if label == "" {
+		return httpx.BadRequest("validation_failed", "Size is required")
+	}
+	if len([]rune(label)) > 20 {
+		return httpx.BadRequest("validation_failed", "Size is too long (max 20 characters)")
+	}
+	if qty < 0 {
+		return httpx.BadRequest("validation_failed", "Stock cannot be negative")
+	}
+
+	err := pgx.BeginFunc(ctx, s.prod.Pool(), func(tx pgx.Tx) error {
+		// Ownership + pricing source: the seller's primary listing on this product.
+		primaryID, err := s.prod.PrimaryListingID(ctx, productID, sellerID)
+		if err != nil {
+			return err
+		}
+		var mrp, price, discount float64
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(mrp,0), selling_price, COALESCE(discount_percent,0)
+			FROM seller_listings WHERE id = $1`, primaryID).Scan(&mrp, &price, &discount); err != nil {
+			return err
+		}
+
+		// Reject a duplicate size on this product.
+		var exists bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS(SELECT 1 FROM product_variants
+			              WHERE product_id = $1 AND upper(variant_code) = upper($2))`,
+			productID, label).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return httpx.Conflict("size_exists", "This size already exists for the product")
+		}
+
+		vid, err := s.prod.CreateVariant(ctx, tx, productID, label, mrp, price, nil, 0)
+		if err != nil {
+			return err
+		}
+		// Link the Size attribute value so the storefront shows it as a size.
+		sizeAttrID, err := s.prod.SizeAttributeID(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if sizeAttrID != "" {
+			valID, err := s.prod.ResolveSizeValueID(ctx, tx, sizeAttrID, label)
+			if err != nil {
+				return err
+			}
+			if valID != "" {
+				if err := s.prod.SetVariantAttribute(ctx, tx, vid, sizeAttrID, valID); err != nil {
+					return err
+				}
+			}
+		}
+
+		listingID, err := s.prod.CreateSellerListing(ctx, tx, SellerListing{
+			SellerID: sellerID, ProductID: productID, VariantID: vid,
+			SKU: strings.ToUpper(label) + "-" + shortID(),
+			MRP: mrp, SellingPrice: price, DiscountPercent: discount,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO inventory (seller_listing_id, available_quantity) VALUES ($1,$2)`,
+			listingID, qty); err != nil {
+			return err
+		}
+		if qty > 0 {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO inventory_transactions
+					(seller_listing_id, change_type, quantity_delta, balance_after, reference_type)
+				VALUES ($1,'restock',$2,$2,'initial')`, listingID, qty); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == ErrNotFound {
+		return httpx.NotFound("product_not_found", "Product not found")
+	}
+	return err
+}
+
 // SubmitForReview submits a seller's product for admin approval.
 func (s *Service) SubmitForReview(ctx context.Context, productID, sellerID string) error {
 	if err := s.prod.SubmitForReview(ctx, productID, sellerID); err == ErrNotFound {

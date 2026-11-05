@@ -3,8 +3,8 @@ import { onMounted, ref, computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ArrowRight, Store, MapPin, Plus, ChevronRight, X } from 'lucide-vue-next'
 import type { ListingCard, Banner, Address } from '@carlitos/types'
-import { pub, customer } from '@/api'
-import { extractApiError } from '@carlitos/shared'
+import { pub, customer, MEDIA_BASE } from '@/api'
+import { extractApiError, resolveMediaUrl } from '@carlitos/shared'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import { INDIA_STATES, DEFAULT_COUNTRY } from '@/constants/india'
@@ -107,6 +107,7 @@ const loading      = ref(true)
 interface SellerSummary {
   slug: string
   name: string
+  logoKey: string
   products: ListingCard[]
 }
 const trendingSellers = computed<SellerSummary[]>(() => {
@@ -114,7 +115,7 @@ const trendingSellers = computed<SellerSummary[]>(() => {
   for (const p of trending.value) {
     if (!p.seller_slug) continue
     let s = map.get(p.seller_slug)
-    if (!s) { s = { slug: p.seller_slug, name: p.seller_name, products: [] }; map.set(p.seller_slug, s) }
+    if (!s) { s = { slug: p.seller_slug, name: p.seller_name, logoKey: p.seller_logo_key || '', products: [] }; map.set(p.seller_slug, s) }
     if (s.products.length < 12) s.products.push(p)
   }
   return Array.from(map.values()).slice(0, 6)
@@ -263,8 +264,9 @@ const categories: { label: string; to: string; icon: string }[] = [
         >
           <div class="mb-3 flex items-center justify-between gap-2">
             <RouterLink :to="`/seller/${s.slug}`" class="group flex min-w-0 items-center gap-2.5">
-              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-stone-100">
-                <Store :size="17" class="text-stone-500" />
+              <span class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-100">
+                <img v-if="s.logoKey" :src="resolveMediaUrl(MEDIA_BASE, s.logoKey)" :alt="s.name" class="h-full w-full object-cover" loading="lazy" />
+                <Store v-else :size="17" class="text-stone-500" />
               </span>
               <span class="min-w-0">
                 <span class="block truncate text-sm font-semibold text-ink group-hover:underline">{{ s.name }}</span>

@@ -23,6 +23,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/shipments', name: 'shipments', component: () => import('@/views/ShipmentsView.vue'), meta: { requiresAuth: true } },
   { path: '/returns', name: 'returns', component: () => import('@/views/ReturnsView.vue'), meta: { requiresAuth: true } },
   { path: '/support', name: 'support', component: () => import('@/views/SupportView.vue'), meta: { requiresAuth: true } },
+  { path: '/admin-support', name: 'admin-support', component: () => import('@/views/AdminSupportView.vue'), meta: { requiresAuth: true } },
   { path: '/settlements', name: 'settlements', component: () => import('@/views/SettlementsView.vue'), meta: { requiresAuth: true } },
   { path: '/packaging', name: 'packaging', component: () => import('@/views/PackagingView.vue'), meta: { requiresAuth: true } },
   { path: '/profile', name: 'profile', component: () => import('@/views/ProfileView.vue'), meta: { requiresAuth: true } },
@@ -53,8 +54,13 @@ router.beforeEach(async (to) => {
   // admin approves the seller, bounce these routes back to the dashboard where
   // the approval-pending banner explains the next steps. (The API enforces this
   // server-side too, returning 'seller_not_approved'.)
+  // The cached status can be stale (e.g. admin approved the store after this
+  // session started), so re-check with the server before blocking.
   if (to.meta.requiresApproved && !store.isApproved) {
-    return { name: 'dashboard', query: { needs_approval: '1' } }
+    await store.refreshSellerStatus()
+    if (!store.isApproved) {
+      return { name: 'dashboard', query: { needs_approval: '1' } }
+    }
   }
   return true
 })

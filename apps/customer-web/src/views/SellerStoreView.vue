@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref, computed, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
-import { Store, Star, Package, SlidersHorizontal } from 'lucide-vue-next'
+import { Store, Star, Package, BadgeCheck, CalendarDays } from 'lucide-vue-next'
 import type { Seller, ListingCard } from '@carlitos/types'
-import { pub } from '@/api'
+import { pub, MEDIA_BASE } from '@/api'
+import { resolveMediaUrl } from '@carlitos/shared'
 import { useSeo } from '@/composables/useSeo'
 import ProductCard from '@/components/ProductCard.vue'
 import PageBack from '@/components/PageBack.vue'
@@ -75,6 +76,21 @@ async function loadProducts() {
 watch(sort, () => { page.value = 1; loadProducts() })
 
 const totalPages = computed(() => Math.ceil(total.value / PAGE_SIZE))
+
+// Store branding: resolve the uploaded logo key to a URL; fall back to the
+// store name's first letter when no logo has been uploaded.
+const logoUrl = computed(() =>
+  sellerInfo.value?.store_logo_key ? resolveMediaUrl(MEDIA_BASE, sellerInfo.value.store_logo_key) : ''
+)
+const storeInitial = computed(() =>
+  (sellerInfo.value?.store_name || (route.params.slug as string) || '?').trim().charAt(0).toUpperCase()
+)
+const memberSince = computed(() => {
+  const d = sellerInfo.value?.created_at
+  if (!d) return ''
+  const year = new Date(d).getFullYear()
+  return Number.isNaN(year) ? '' : String(year)
+})
 </script>
 
 <template>
@@ -87,37 +103,50 @@ const totalPages = computed(() => Math.ceil(total.value / PAGE_SIZE))
     </div>
 
     <template v-else>
-      <!-- Store Header -->
-      <div class="relative overflow-hidden rounded-xl bg-stone-900 p-8 mb-8">
-        <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
-          <div class="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-white/10">
-            <Store :size="28" class="text-white" />
+      <!-- Store Header (compact + responsive) -->
+      <div class="relative overflow-hidden rounded-xl bg-stone-900 p-4 mb-6 sm:p-6">
+        <div class="flex items-start gap-3 sm:gap-4">
+          <!-- Logo (uploaded) or store-initial fallback -->
+          <div class="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white/10 sm:h-16 sm:w-16">
+            <img v-if="logoUrl" :src="logoUrl" :alt="sellerInfo?.store_name || 'Store logo'" class="h-full w-full object-cover" />
+            <span v-else class="text-xl font-semibold text-white/90 sm:text-2xl">{{ storeInitial }}</span>
           </div>
-          <div>
-            <h1 class="text-2xl font-semibold text-white">
-              {{ sellerInfo?.store_name || route.params.slug }}
-            </h1>
-            <div v-if="sellerInfo?.rating_avg" class="mt-1 flex items-center gap-2">
-              <div class="flex gap-0.5">
-                <svg v-for="i in 5" :key="i" :class="['h-4 w-4', i <= Math.round(sellerInfo.rating_avg || 0) ? 'fill-amber-400 text-amber-400' : 'fill-white/20 text-white/20']" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-              </div>
-              <span class="text-sm text-white/80">{{ sellerInfo.rating_avg.toFixed(1) }} ({{ sellerInfo.rating_count }} reviews)</span>
+
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <h1 class="truncate text-lg font-semibold text-white sm:text-2xl">
+                {{ sellerInfo?.store_name || route.params.slug }}
+              </h1>
+              <span
+                v-if="sellerInfo?.status === 'approved'"
+                class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300"
+              >
+                <BadgeCheck :size="12" /> Verified
+              </span>
             </div>
-            <p v-if="sellerInfo?.store_description" class="mt-2 text-sm text-white/70 max-w-lg">
+
+            <!-- Rating -->
+            <div v-if="sellerInfo?.rating_avg" class="mt-1 flex items-center gap-1.5">
+              <div class="flex gap-0.5">
+                <svg v-for="i in 5" :key="i" :class="['h-3.5 w-3.5', i <= Math.round(sellerInfo.rating_avg || 0) ? 'fill-amber-400 text-amber-400' : 'fill-white/20 text-white/20']" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+              </div>
+              <span class="text-xs text-white/70 sm:text-sm">{{ sellerInfo.rating_avg.toFixed(1) }} ({{ sellerInfo.rating_count }})</span>
+            </div>
+
+            <!-- Description -->
+            <p v-if="sellerInfo?.store_description" class="mt-2 line-clamp-2 max-w-xl text-xs text-white/70 sm:text-sm">
               {{ sellerInfo.store_description }}
             </p>
-          </div>
-        </div>
 
-        <!-- Stats strip -->
-        <div class="mt-6 flex flex-wrap gap-6 border-t border-white/10 pt-5">
-          <div class="flex items-center gap-2">
-            <Package :size="16" class="text-white/60" />
-            <span class="text-sm text-white/80">{{ total }} products</span>
-          </div>
-          <div v-if="sellerInfo?.status === 'approved'" class="flex items-center gap-2">
-            <Star :size="16" class="text-amber-400" />
-            <span class="text-sm text-white/80">Verified Seller</span>
+            <!-- Inline stats -->
+            <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-white/70 sm:text-sm">
+              <span class="inline-flex items-center gap-1.5">
+                <Package :size="14" class="text-white/50" /> {{ total }} products
+              </span>
+              <span v-if="memberSince" class="inline-flex items-center gap-1.5">
+                <CalendarDays :size="14" class="text-white/50" /> Since {{ memberSince }}
+              </span>
+            </div>
           </div>
         </div>
       </div>

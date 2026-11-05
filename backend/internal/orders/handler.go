@@ -50,7 +50,8 @@ func (h *Handler) RegisterSeller(r fiber.Router) {
 
 // RegisterAdmin mounts admin order routes.
 func (h *Handler) RegisterAdmin(r fiber.Router) {
-	r.Get("/orders", auth.RequirePermission(auth.PermOrderView), h.adminList)
+	// The Reports page is built from this list, so reports.view may read it too.
+	r.Get("/orders", auth.RequireAnyPermission(auth.PermOrderView, auth.PermReportsView), h.adminList)
 	r.Get("/orders/:id", auth.RequirePermission(auth.PermOrderView), h.adminGet)
 	r.Post("/orders/:id/status", auth.RequirePermission(auth.PermOrderManage), h.adminUpdateStatus)
 	r.Post("/orders/:id/cancel", auth.RequirePermission(auth.PermOrderManage), h.adminCancel)

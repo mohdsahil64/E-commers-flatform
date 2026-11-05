@@ -39,7 +39,9 @@ func (h *Handler) RegisterSeller(r fiber.Router) {
 // pays the refund out-of-band and records the UTR, which is unlocked once the
 // seller has approved + received (status = refund_processing).
 func (h *Handler) RegisterAdmin(r fiber.Router) {
-	r.Get("/returns", auth.RequirePermission(auth.PermReturnManage), h.adminList)
+	// The list feeds both the Returns and Refunds pages, so either permission
+	// may read it; paying a refund still needs refund.manage.
+	r.Get("/returns", auth.RequireAnyPermission(auth.PermReturnManage, auth.PermRefundManage), h.adminList)
 	r.Post("/returns/:id/refund", auth.RequirePermission(auth.PermRefundManage), h.adminRefund)
 }
 

@@ -4,7 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import {
   MapPin, CreditCard, ChevronRight, ChevronLeft, Plus,
   Tag, X, Wallet, BadgePercent, Check, Banknote, Smartphone,
-  ShieldCheck, Info,
+  ShieldCheck, Info, Pencil, Phone,
 } from 'lucide-vue-next'
 import type { Address, Coupon } from '@carlitos/types'
 import { customer, MEDIA_BASE } from '@/api'
@@ -58,13 +58,32 @@ const shipping       = computed(() => 0)
    COD is only offered when EVERY seller in the cart allows it. A single
    item from a seller who turned COD off disables the option (the server
    enforces the same rule at checkout). */
+const codBlockedItems = computed(() =>
+  cartItems.value.filter(i => i.seller_cod_enabled === false),
+)
 const codBlockedBy = computed(() =>
-  cartItems.value
-    .filter(i => i.seller_cod_enabled === false)
+  codBlockedItems.value
     .map(i => i.seller_name)
     .filter((v, idx, arr) => arr.indexOf(v) === idx),
 )
-const codAvailable = computed(() => codBlockedBy.value.length === 0)
+const codAvailable = computed(() => codBlockedItems.value.length === 0)
+
+// Human-readable list of the exact products that disable COD, e.g.
+// "Nike Air Max, Levi's Jacket". Used in the checkout error so the customer
+// knows which items to remove from the cart to pay with Cash on Delivery.
+const codBlockedProductNames = computed(() =>
+  codBlockedItems.value
+    .map(i => i.product_title)
+    .filter((v, idx, arr) => arr.indexOf(v) === idx),
+)
+const codBlockedMessage = computed(() => {
+  const names = codBlockedProductNames.value
+  if (!names.length) return ''
+  const list = names.join(', ')
+  return names.length === 1
+    ? `Cash on Delivery isn\u2019t available for "${list}". Remove it from your cart or pay online.`
+    : `Cash on Delivery isn\u2019t available for these items: ${list}. Remove them from your cart or pay online.`
+})
 
 /* ── Addresses ──────────────────────────────────────── */
 const showAddrModal  = ref(false)
@@ -212,9 +231,10 @@ async function placeOrder() {
   error.value = ''
   if (!selectedAddr.value) { error.value = 'Please select a delivery address.'; step.value = 1; return }
   if (paymentMethod.value === 'cod' && !codAvailable.value) {
-    error.value = 'Cash on Delivery isn\u2019t available for your cart. Please pay online.'
+    error.value = codBlockedMessage.value
     paymentMethod.value = 'online'
     step.value = 2
+    toast.error(error.value)
     return
   }
   placing.value = true
@@ -424,7 +444,7 @@ function addrLine(a: Address): string {
           </div>
 
           <div class="space-y-2.5">
-            <!-- Pay Online -->
+            <!-- Pay Online (mirrors the COD card: same size + detail) -->
             <label
               class="group relative block cursor-pointer rounded-xl border p-3 transition-all"
               :class="paymentMethod === 'online'
@@ -441,7 +461,12 @@ function addrLine(a: Address): string {
                 </span>
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center justify-between gap-2">
-                    <p class="text-sm font-semibold text-ink">Pay Online</p>
+                    <div class="flex items-center gap-1.5">
+                      <p class="text-sm font-semibold text-ink">Pay Online</p>
+                      <span class="inline-flex items-center gap-0.5 rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                        <BadgePercent :size="11" /> 10% cashback
+                      </span>
+                    </div>
                     <span
                       class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors"
                       :class="paymentMethod === 'online' ? 'border-ink bg-ink text-white' : 'border-stone-300'"
@@ -449,20 +474,19 @@ function addrLine(a: Address): string {
                       <Check v-if="paymentMethod === 'online'" :size="11" />
                     </span>
                   </div>
-                  <p class="mt-0.5 text-[11px] text-stone-500">UPI, Cards, Net Banking &amp; Wallets</p>
-                  <!-- Real payment provider logos -->
+                  <p class="mt-0.5 text-[11px] text-stone-500">
+                    Pay now with UPI, cards Get 10% cashback.
+                  </p>
+                  <!-- Online payment badges (mirrors the COD card) -->
                   <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                    <img src="/payments/upi.svg" alt="UPI" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
                     <img src="/payments/gpay.svg" alt="Google Pay" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
-                    <img src="/payments/phonepe.svg" alt="PhonePe" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
                     <img src="/payments/paytm.svg" alt="Paytm" class="h-6 w-auto rounded border border-stone-200 bg-white" loading="lazy" />
                     <span class="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-white px-1.5 py-1 text-[10px] font-medium text-stone-600">
                       <CreditCard :size="12" class="text-indigo-600" /> Cards
                     </span>
                   </div>
                   <p class="mt-2 inline-flex items-center gap-1 text-[10px] text-stone-400">
-                    <ShieldCheck :size="11" class="text-emerald-500" /> Secured by
-                    <img src="/payments/razorpay.svg" alt="Razorpay" class="h-3.5 w-auto" loading="lazy" />
+                    <ShieldCheck :size="11" class="text-emerald-500" /> 100% secure payment
                   </p>
                 </div>
               </div>
@@ -538,21 +562,72 @@ function addrLine(a: Address): string {
 
       <!-- STEP 3: REVIEW -->
       <template v-else>
+        <!-- Delivery address -->
         <section class="card p-3">
-          <div class="mb-1.5 flex items-center justify-between">
-            <p class="text-xs font-semibold text-stone-700">Delivery to</p>
-            <button class="text-[11px] font-medium text-ink underline" @click="step = 1">Change</button>
+          <div class="mb-2.5 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+                <MapPin :size="15" />
+              </span>
+              <p class="text-xs font-semibold text-stone-700">Delivery address</p>
+            </div>
+            <button
+              class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-stone-100"
+              @click="step = 1"
+            >
+              <Pencil :size="11" /> Change
+            </button>
           </div>
-          <p class="text-xs text-stone-700">{{ selectedAddrObj?.contact_name }} · {{ selectedAddrObj?.contact_phone }}</p>
-          <p class="text-xs text-stone-600">{{ selectedAddrObj ? addrLine(selectedAddrObj) : '' }} – {{ selectedAddrObj?.pincode }}</p>
+          <div class="rounded-lg border border-stone-100 bg-stone-50 p-2.5">
+            <p class="text-xs font-semibold text-ink">{{ selectedAddrObj?.contact_name }}</p>
+            <p class="mt-1 flex items-start gap-1.5 text-xs text-stone-600">
+              <MapPin :size="12" class="mt-px shrink-0 text-stone-400" />
+              <span>{{ selectedAddrObj ? addrLine(selectedAddrObj) : '' }} – {{ selectedAddrObj?.pincode }}</span>
+            </p>
+            <p class="mt-1 inline-flex items-center gap-1.5 text-xs text-stone-600">
+              <Phone :size="12" class="shrink-0 text-stone-400" />
+              <span>{{ selectedAddrObj?.contact_phone }}</span>
+            </p>
+          </div>
         </section>
 
+        <!-- Payment method -->
         <section class="card p-3">
-          <div class="mb-1.5 flex items-center justify-between">
-            <p class="text-xs font-semibold text-stone-700">Payment</p>
-            <button class="text-[11px] font-medium text-ink underline" @click="step = 2">Change</button>
+          <div class="mb-2.5 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+                <Wallet :size="15" />
+              </span>
+              <p class="text-xs font-semibold text-stone-700">Payment method</p>
+            </div>
+            <button
+              class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-stone-100"
+              @click="step = 2"
+            >
+              <Pencil :size="11" /> Change
+            </button>
           </div>
-          <p class="text-xs text-stone-700">{{ paymentMethod === 'cod' ? 'Cash on Delivery' : 'Online Payment' }}</p>
+          <div class="flex items-center gap-2.5 rounded-lg border border-stone-100 bg-stone-50 p-2.5">
+            <span
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+              :class="paymentMethod === 'cod' ? 'bg-ink text-white' : 'bg-ink text-white'"
+            >
+              <component :is="paymentMethod === 'cod' ? Banknote : Smartphone" :size="16" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <p class="text-xs font-semibold text-ink">
+                {{ paymentMethod === 'cod' ? 'Cash on Delivery' : 'Pay Online' }}
+              </p>
+              <p class="mt-0.5 flex items-center gap-1 text-[11px] text-stone-500">
+                <template v-if="paymentMethod === 'cod'">
+                  <ShieldCheck :size="11" class="text-emerald-500" /> Pay in cash at your doorstep
+                </template>
+                <template v-else>
+                  <BadgePercent :size="11" class="text-emerald-600" /> UPI, cards &amp; wallets · 10% cashback
+                </template>
+              </p>
+            </div>
+          </div>
         </section>
 
         <CheckoutPriceSummary :subtotal="cartSubtotal" :total="payableTotal" :coupon="appliedCoupon" />

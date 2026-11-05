@@ -39,6 +39,7 @@ func (h *Handler) RegisterSeller(r fiber.Router) {
 	r.Get("/products/:id", h.sellerGetProduct)
 	r.Put("/products/:id", h.sellerUpdateProduct)
 	r.Patch("/products/:id/stock", h.sellerSetStock)
+	r.Post("/products/:id/sizes", h.sellerAddSize)
 	r.Post("/products/:id/submit", h.sellerSubmitProduct)
 }
 
@@ -281,6 +282,27 @@ func (h *Handler) sellerSetStock(c *fiber.Ctx) error {
 		return err
 	}
 	return httpx.Message(c, "Stock updated")
+}
+
+type addSizeBody struct {
+	Size     string `json:"size"`
+	Quantity int    `json:"quantity"`
+}
+
+// sellerAddSize adds a new size (with opening stock) to an existing product.
+func (h *Handler) sellerAddSize(c *fiber.Ctx) error {
+	sellerID, err := h.resolveSeller(c)
+	if err != nil {
+		return err
+	}
+	var body addSizeBody
+	if err := c.BodyParser(&body); err != nil {
+		return httpx.BadRequest("invalid_body", "Invalid request body")
+	}
+	if err := h.svc.AddSize(c.Context(), c.Params("id"), sellerID, body.Size, body.Quantity); err != nil {
+		return err
+	}
+	return httpx.Created(c, fiber.Map{"message": "Size added"})
 }
 
 func (h *Handler) sellerListProducts(c *fiber.Ctx) error {

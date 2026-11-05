@@ -22,12 +22,69 @@ func NewHandler(svc *Service, sellerLookup *sellers.Repository) *Handler {
 // RegisterSeller mounts seller settlement reads.
 func (h *Handler) RegisterSeller(r fiber.Router) {
 	r.Get("/settlements", h.mine)
+	r.Get("/settlements/summary", h.summary) // must stay before /:id
+	r.Get("/settlements/:id", h.sellerDetail)
+}
+
+// sellerDetail returns one of the caller's own settlements with its order lines.
+func (h *Handler) sellerDetail(c *fiber.Ctx) error {
+	seller, err := h.sellerLookup.FindByUserID(c.Context(), auth.From(c).UserID)
+	if err != nil {
+		return httpx.Forbidden("no_seller", "Seller profile not found")
+	}
+	d, err := h.svc.GetDetail(c.Context(), c.Params("id"), seller.ID)
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, d)
+}
+
+func (h *Handler) adminDetail(c *fiber.Ctx) error {
+	d, err := h.svc.GetDetail(c.Context(), c.Params("id"), "")
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, d)
+}
+
+func (h *Handler) preview(c *fiber.Ctx) error {
+	rows, err := h.svc.Preview(c.Context())
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, rows)
+}
+
+func (h *Handler) summary(c *fiber.Ctx) error {
+	seller, err := h.sellerLookup.FindByUserID(c.Context(), auth.From(c).UserID)
+	if err != nil {
+		return httpx.Forbidden("no_seller", "Seller profile not found")
+	}
+	sum, err := h.svc.SummaryForSeller(c.Context(), seller.ID)
+	if err != nil {
+		return err
+	}
+	return httpx.OK(c, sum)
+}
+
+func (h *Handler) generateAll(c *fiber.Ctx) error {
+	res, err := h.svc.GenerateAll(c.Context(), auth.From(c).UserID)
+	if err != nil {
+		return err
+	}
+	if res == nil {
+		res = []GenerateResult{}
+	}
+	return httpx.OK(c, res)
 }
 
 // RegisterAdmin mounts admin settlement management.
 func (h *Handler) RegisterAdmin(r fiber.Router) {
 	r.Get("/settlements", auth.RequirePermission(auth.PermSettlementView), h.all)
+	r.Get("/settlements/preview", auth.RequirePermission(auth.PermSettlementView), h.preview) // before /:id
+	r.Get("/settlements/:id", auth.RequirePermission(auth.PermSettlementView), h.adminDetail)
 	r.Post("/settlements/generate", auth.RequirePermission(auth.PermSettlementManage), h.generate)
+	r.Post("/settlements/generate-all", auth.RequirePermission(auth.PermSettlementManage), h.generateAll)
 	r.Post("/settlements/:id/status", auth.RequirePermission(auth.PermSettlementManage), h.status)
 }
 
@@ -77,7 +134,7 @@ func (h *Handler) status(c *fiber.Ctx) error {
 	if err := c.BodyParser(&b); err != nil {
 		return httpx.BadRequest("invalid_body", "Invalid request body")
 	}
-	if err := h.svc.MarkStatus(c.Context(), c.Params("id"), b.Status, b.UTR); err != nil {
+	if err := h.svc.MarkStatus(c.Context(), auth.From(c).UserID, c.Params("id"), b.Status, b.UTR); err != nil {
 		return err
 	}
 	return httpx.Message(c, "Settlement updated")

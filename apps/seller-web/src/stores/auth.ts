@@ -53,14 +53,15 @@ export const useAuthStore = defineStore('auth', () => {
     } catch { clearTokens(); user.value = null; sellerStatus.value = null } finally { initialized.value = true }
   }
 
-  // Loads the seller store's approval status (best-effort; null on failure).
+  // Loads the seller store's approval status. On a transient failure we KEEP the
+  // last known status instead of wiping it, so a network blip can never make an
+  // approved seller look unapproved (and get blocked from adding products).
   async function refreshSellerStatus() {
     try {
       const s = await sellerApi.profile()
-      sellerStatus.value = (s?.status as SellerStatus) ?? null
-    } catch {
-      sellerStatus.value = null
-    }
+      sellerStatus.value = (s?.status as SellerStatus) ?? sellerStatus.value
+    } catch { /* keep previous value */ }
+    return sellerStatus.value
   }
 
   async function logout() {

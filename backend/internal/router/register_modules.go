@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/carlitos/backend/internal/sellers"
 	"github.com/carlitos/backend/internal/settlements"
 	"github.com/carlitos/backend/internal/shipping"
+	"github.com/carlitos/backend/internal/staff"
 	"github.com/carlitos/backend/internal/storage"
 	"github.com/carlitos/backend/internal/support"
 	"github.com/carlitos/backend/internal/team"
@@ -54,6 +56,20 @@ func registerModules(a *app.App, v1, public, seller, admin, authGroup fiber.Rout
 	auditLog := audit.New(pool)
 	notifStore := notifications.NewStore(pool)
 
+	// Make sure every permission, built-in role and default role->permission
+	// link exists (adds only; never removes). This is what lets a newly added
+	// permission show up on an already-seeded database.
+	if err := auth.SyncRBAC(ctx, pool); err != nil {
+		a.Logger.Error("rbac sync failed", "error", err)
+	}
+	// When e-mail is not really delivered (dev "log" provider) the first-login
+	// credentials are written to the server log so a developer can finish the
+	// flow locally. Never enabled when a real mail provider is configured.
+	var devCredLogger *slog.Logger
+	if dispatcher.Email.Name() == "log" {
+		devCredLogger = a.Logger
+	}
+
 	tokenManager := auth.NewManager(cfg.JWT.AccessSecret, cfg.JWT.RefreshSecret,
 		cfg.JWT.AccessTTL, cfg.JWT.RefreshTTL)
 	authRepo := auth.NewRepository(pool)
@@ -73,6 +89,10 @@ func registerModules(a *app.App, v1, public, seller, admin, authGroup fiber.Rout
 	}
 	authService := auth.NewService(authRepo, tokenManager, cfg.JWT.BcryptCost).
 		WithOTP(otpStore, otpSender).
+		WithDevCredentialLogging(devCredLogger).
+		WithStaffHook(func(ctx context.Context, userID, event string) {
+			auditLog.Action(ctx, userID, "admin", event, "staff", userID)
+		}).
 		WithEmailVerifySender(func(ctx context.Context, to, subject, html string) error {
 			return dispatcher.Email.Send(ctx, notify.EmailMessage{To: to, Subject: subject, Body: html, IsHTML: true})
 		}).
@@ -275,6 +295,8 @@ func registerModules(a *app.App, v1, public, seller, admin, authGroup fiber.Rout
 	reviews.NewHandler(reviewService).RegisterPublic(public)
 	payments.NewHandler(paymentService).RegisterPublic(public)
 	fulfillmentHandler.RegisterPublic(public, cfg.Shipping.WebhookToken)
+	// Real-time support chat socket (token passed in the query string).
+	support.NewHandler(supportService, sellerRepo).RegisterWS(public, tokenManager, cfg.CORS.AllowedOrigins, authRepo)
 
 	public.Get("/sellers/:slug", func(c *fiber.Ctx) error {
 		return publicSellerStore(c, sellerRepo)
@@ -310,14 +332,31 @@ func registerModules(a *app.App, v1, public, seller, admin, authGroup fiber.Rout
 	uploadHandler.Register(seller)
 
 	admin.Use(adminAuth)
+	// Server-side authority for every admin call: re-checks the account is
+	// still active and swaps in its LIVE roles/permissions (never trusts the
+	// client-held token's copy). Individual routes then require a permission.
+	admin.Use(auth.AdminGuard(authRepo))
+	staffService := staff.NewService(
+		staff.NewRepository(pool), cfg.JWT.BcryptCost, cfg.App.BaseURL+"/admin/login",
+		func(ctx context.Context, to, subject, html string) error {
+			return dispatcher.Email.Send(ctx, notify.EmailMessage{To: to, Subject: subject, Body: html, IsHTML: true})
+		},
+		func(ctx context.Context, actorID, action, entityType, entityID string) {
+			auditLog.Action(ctx, actorID, "admin", action, entityType, entityID)
+		},
+		a.Logger, devCredLogger,
+	)
+	staff.NewHandler(staffService).RegisterAdmin(admin)
 	sellers.NewHandler(sellerService).RegisterAdmin(admin)
 	catalog.NewHandler(catalogService, sellerRepo).RegisterAdmin(admin, tokenManager)
 	orders.NewHandler(orderService, sellerRepo).RegisterAdmin(admin)
+	fulfillmentHandler.RegisterAdmin(admin)
 	merchandising.NewHandler(merchRepo).RegisterAdmin(admin)
 	team.NewHandler(teamRepo).RegisterAdmin(admin)
 	couponHandler.RegisterAdmin(admin)
 	returns.NewHandler(returnService, sellerRepo).RegisterAdmin(admin)
 	support.NewHandler(supportService, sellerRepo).RegisterAdmin(admin)
+	customers.NewHandler(custService).RegisterAdmin(admin, auditLog)
 	reviews.NewHandler(reviewService).RegisterAdmin(admin)
 	packaging.NewHandler(packService, sellerRepo).RegisterAdmin(admin)
 	settlements.NewHandler(settleService, sellerRepo).RegisterAdmin(admin)

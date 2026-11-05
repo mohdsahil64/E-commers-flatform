@@ -3,8 +3,8 @@ import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Store, Search } from 'lucide-vue-next'
 import type { Seller } from '@carlitos/types'
-import { admin } from '@/api'
-import { formatDate, SELLER_STATUS_LABELS } from '@carlitos/shared'
+import { admin, MEDIA_BASE } from '@/api'
+import { formatDate, resolveMediaUrl, SELLER_STATUS_LABELS } from '@carlitos/shared'
 
 const router  = useRouter()
 const sellers = ref<Seller[]>([])
@@ -101,8 +101,16 @@ watch(status, () => { page.value = 1; load() })
         <tbody>
           <tr v-for="s in sellers" :key="s.id" @click="router.push(`/sellers/${s.id}`)">
             <td>
-              <p class="font-medium text-ink">{{ s.store_name }}</p>
-              <p class="text-xs text-stone-400">{{ s.store_slug }}</p>
+              <div class="flex items-center gap-2.5">
+                <div class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-100">
+                  <img v-if="s.store_logo_key" :src="resolveMediaUrl(MEDIA_BASE, s.store_logo_key)" :alt="s.store_name" class="h-full w-full object-cover" loading="lazy" />
+                  <Store v-else :size="16" class="text-stone-400" />
+                </div>
+                <div class="min-w-0">
+                  <p class="truncate font-medium text-ink">{{ s.store_name }}</p>
+                  <p class="truncate text-xs text-stone-400">{{ s.store_slug }}</p>
+                </div>
+              </div>
             </td>
             <td class="hidden md:table-cell text-stone-500">{{ s.owner_name }}</td>
             <td class="hidden lg:table-cell text-stone-500">{{ s.rating_avg.toFixed(1) }} ★</td>

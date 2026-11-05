@@ -114,7 +114,11 @@ function clearFilters() {
   load()
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  // Re-check approval so the "can't add products" notice never shows from a stale status.
+  if (!auth.isApproved) auth.refreshSellerStatus()
+})
 
 let searchTimeout: ReturnType<typeof setTimeout>
 function onSearch() {

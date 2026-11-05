@@ -146,16 +146,21 @@ type sellerRecipient struct {
 	email     string
 	storeName string
 	payable   float64
+	// Seller's notification preferences (Settings → Notifications).
+	notifyOrder    bool
+	notifyLowStock bool
 }
 
 func (n *Notifier) loadOrderSellers(ctx context.Context, orderID string) ([]sellerRecipient, error) {
 	rows, err := n.pool.Query(ctx, `
 		SELECT oi.seller_id, coalesce(s.contact_email,''), coalesce(s.store_name,''),
-		       coalesce(sum(oi.seller_payable),0)
+		       coalesce(sum(oi.seller_payable),0),
+		       s.notify_order_emails, s.notify_low_stock
 		FROM order_items oi
 		JOIN sellers s ON s.id = oi.seller_id
 		WHERE oi.order_id = $1
-		GROUP BY oi.seller_id, s.contact_email, s.store_name`, orderID)
+		GROUP BY oi.seller_id, s.contact_email, s.store_name,
+		         s.notify_order_emails, s.notify_low_stock`, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -163,10 +168,36 @@ func (n *Notifier) loadOrderSellers(ctx context.Context, orderID string) ([]sell
 	var out []sellerRecipient
 	for rows.Next() {
 		var sr sellerRecipient
-		if err := rows.Scan(&sr.sellerID, &sr.email, &sr.storeName, &sr.payable); err != nil {
+		if err := rows.Scan(&sr.sellerID, &sr.email, &sr.storeName, &sr.payable,
+			&sr.notifyOrder, &sr.notifyLowStock); err != nil {
 			return nil, err
 		}
 		out = append(out, sr)
+	}
+	return out, rows.Err()
+}
+
+// lowStockForOrder returns this seller's items from the order whose available
+// stock has fallen to (or below) the listing's low-stock threshold.
+func (n *Notifier) lowStockForOrder(ctx context.Context, orderID, sellerID string) ([]emailtpl.LowStockItem, error) {
+	rows, err := n.pool.Query(ctx, `
+		SELECT DISTINCT oi.product_title, coalesce(oi.variant_label,''), inv.available_quantity
+		FROM order_items oi
+		JOIN inventory inv ON inv.seller_listing_id = oi.seller_listing_id
+		WHERE oi.order_id = $1 AND oi.seller_id = $2
+		  AND inv.available_quantity <= inv.low_stock_threshold
+		ORDER BY inv.available_quantity, oi.product_title`, orderID, sellerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []emailtpl.LowStockItem
+	for rows.Next() {
+		var it emailtpl.LowStockItem
+		if err := rows.Scan(&it.Title, &it.Variant, &it.Available); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
 	}
 	return out, rows.Err()
 }
@@ -222,15 +253,34 @@ func (n *Notifier) OrderPlaced(ctx context.Context, orderID string) {
 		if sr.email == "" {
 			continue
 		}
-		lines, _ := n.loadOrderLines(ctx, orderID, sr.sellerID)
-		html := emailtpl.SellerNewOrder(emailtpl.SellerNewOrderData{
-			StoreName:   sr.storeName,
-			OrderNumber: meta.number,
-			Lines:       lines,
-			Payable:     inr(sr.payable),
-			DashURL:     n.sellerURL + "/orders",
-		})
-		n.sendEmail(ctx, sr.email, "New order "+meta.number+" on CARLITOS", html)
+		// "New order emails" preference.
+		if sr.notifyOrder {
+			lines, _ := n.loadOrderLines(ctx, orderID, sr.sellerID)
+			html := emailtpl.SellerNewOrder(emailtpl.SellerNewOrderData{
+				StoreName:   sr.storeName,
+				OrderNumber: meta.number,
+				Lines:       lines,
+				Payable:     inr(sr.payable),
+				DashURL:     n.sellerURL + "/orders",
+			})
+			n.sendEmail(ctx, sr.email, "New order "+meta.number+" on CARLITOS", html)
+		}
+
+		// "Low stock alerts" preference: this order may have pushed items to/below
+		// their low-stock level.
+		if sr.notifyLowStock {
+			items, err := n.lowStockForOrder(ctx, orderID, sr.sellerID)
+			if err != nil {
+				n.logger.Error("ordernotify: low stock check", "order", orderID, "seller", sr.sellerID, "error", err)
+			} else if len(items) > 0 {
+				html := emailtpl.SellerLowStock(emailtpl.SellerLowStockData{
+					StoreName: sr.storeName,
+					Items:     items,
+					DashURL:   n.sellerURL + "/inventory",
+				})
+				n.sendEmail(ctx, sr.email, "Low stock alert on CARLITOS", html)
+			}
+		}
 	}
 }
 
@@ -256,21 +306,23 @@ func (n *Notifier) ReturnRequested(ctx context.Context, returnID string) {
 	var (
 		orderNumber, returnNumber, reqType, reason string
 		sellerID, storeName, sellerEmail, orderID  string
+		notifyReturns                              bool
 	)
 	err := n.pool.QueryRow(ctx, `
 		SELECT coalesce(o.order_number,''), coalesce(r.return_number,''), r.type,
 		       coalesce(r.reason,''), r.seller_id, coalesce(s.store_name,''),
-		       coalesce(s.contact_email,''), r.order_id
+		       coalesce(s.contact_email,''), r.order_id, s.notify_return_emails
 		FROM returns r
 		JOIN orders o ON o.id = r.order_id
 		JOIN sellers s ON s.id = r.seller_id
 		WHERE r.id = $1`, returnID).
-		Scan(&orderNumber, &returnNumber, &reqType, &reason, &sellerID, &storeName, &sellerEmail, &orderID)
+		Scan(&orderNumber, &returnNumber, &reqType, &reason, &sellerID, &storeName, &sellerEmail, &orderID, &notifyReturns)
 	if err != nil {
 		n.logger.Error("ordernotify: load return", "return", returnID, "error", err)
 		return
 	}
-	if sellerEmail == "" {
+	// Respect the seller's "Return & exchange emails" preference.
+	if sellerEmail == "" || !notifyReturns {
 		return
 	}
 	lines, _ := n.loadOrderLines(ctx, orderID, sellerID)
@@ -297,20 +349,23 @@ func (n *Notifier) PayoutProcessed(ctx context.Context, settlementID string) {
 		number, utr, storeName, sellerEmail string
 		periodStart, periodEnd              string
 		netPayable                          float64
+		notifySettlement                    bool
 	)
 	err := n.pool.QueryRow(ctx, `
 		SELECT coalesce(ss.settlement_number,''), coalesce(ss.utr_reference,''),
 		       coalesce(s.store_name,''), coalesce(s.contact_email,''),
-		       ss.period_start::text, ss.period_end::text, ss.net_payable
+		       ss.period_start::text, ss.period_end::text, ss.net_payable,
+		       s.notify_settlement_emails
 		FROM seller_settlements ss
 		JOIN sellers s ON s.id = ss.seller_id
 		WHERE ss.id = $1`, settlementID).
-		Scan(&number, &utr, &storeName, &sellerEmail, &periodStart, &periodEnd, &netPayable)
+		Scan(&number, &utr, &storeName, &sellerEmail, &periodStart, &periodEnd, &netPayable, &notifySettlement)
 	if err != nil {
 		n.logger.Error("ordernotify: load settlement", "settlement", settlementID, "error", err)
 		return
 	}
-	if sellerEmail == "" {
+	// Respect the seller's "Settlement / payout emails" preference.
+	if sellerEmail == "" || !notifySettlement {
 		return
 	}
 	html := emailtpl.SellerPayoutProcessed(emailtpl.SellerPayoutData{

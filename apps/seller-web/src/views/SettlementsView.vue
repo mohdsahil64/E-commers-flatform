@@ -3,6 +3,7 @@ import { onMounted, ref, computed } from 'vue'
 import { Wallet, TrendingUp, Clock, Download } from 'lucide-vue-next'
 import type { Settlement } from '@carlitos/types'
 import { seller } from '@/api'
+import PayoutCards from '@/components/PayoutCards.vue'
 import { formatINR, formatDate } from '@carlitos/shared'
 
 const settlements = ref<Settlement[]>([])
@@ -32,6 +33,8 @@ function statusClass(s: string) {
     <div class="page-header">
       <h1 class="page-title">Settlements</h1>
     </div>
+
+    <PayoutCards class="mb-6 block" />
 
     <!-- Summary cards: 2 columns on mobile, 4 on wide screens -->
     <div class="mb-6 grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">

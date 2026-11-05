@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import { RouterLink, useRouter, useRoute } from 'vue-router'
 import {
   LayoutDashboard, Package, Boxes, ShoppingCart, Truck, RotateCcw,
-  Wallet, Box, Store, Settings, Menu, X, LogOut, LifeBuoy,
+  Wallet, Box, Store, Settings, Menu, X, LogOut, LifeBuoy, Headset,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import BrandLogo from '@/components/BrandLogo.vue'
@@ -21,7 +21,8 @@ const nav = [
   { label: 'Orders',      to: '/orders',     icon: ShoppingCart },
   { label: 'Shipments',   to: '/shipments',  icon: Truck },
   { label: 'Returns',     to: '/returns',    icon: RotateCcw },
-  { label: 'Help & Support', to: '/support', icon: LifeBuoy },
+  { label: 'Customer Issues', to: '/support', icon: LifeBuoy },
+  { label: 'Admin Support', to: '/admin-support', icon: Headset },
   { label: 'Settlements', to: '/settlements',icon: Wallet },
   { label: 'Packaging',   to: '/packaging',  icon: Box },
 ]

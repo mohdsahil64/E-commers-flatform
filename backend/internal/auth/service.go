@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"strings"
 	"time"
@@ -48,6 +49,11 @@ type Service struct {
 	otpSender   OTPSender
 	resetSender PasswordResetSender
 	verifyEmailSender VerifyEmailSender
+
+	// Admin employee first-login setup (see staff_setup.go).
+	staffHook   StaffEventHook
+	devLogger   *slog.Logger // non-nil only when e-mail is not really delivered
+	adminThrott *loginThrottle
 }
 
 // sellerEmailKey / sellerPhoneKey scope signup verification challenges so an
@@ -57,7 +63,7 @@ func sellerPhoneKey(phone string) string { return "sellersignup:phone:" + normal
 
 // NewService builds an auth Service.
 func NewService(repo *Repository, tokens *Manager, bcryptCost int) *Service {
-	return &Service{repo: repo, tokens: tokens, bcryptCost: bcryptCost}
+	return &Service{repo: repo, tokens: tokens, bcryptCost: bcryptCost, adminThrott: newLoginThrottle()}
 }
 
 // WithOTP attaches the OTP store and sender used for customer mobile login.
@@ -341,7 +347,7 @@ func (s *Service) Login(ctx context.Context, accountType, email, password, ua, i
 	case "suspended":
 		return nil, httpx.Forbidden("account_suspended", "This account is suspended")
 	case "blocked":
-		return nil, httpx.Forbidden("account_blocked", "This account is blocked")
+		return nil, blockedError(u)
 	case "inactive":
 		return nil, httpx.Forbidden("account_inactive", "This account is inactive")
 	}
@@ -390,7 +396,7 @@ func (s *Service) VerifyOTP(ctx context.Context, phone, code, ua, ip string) (*T
 		case "suspended":
 			return nil, httpx.Forbidden("account_suspended", "This account is suspended")
 		case "blocked":
-			return nil, httpx.Forbidden("account_blocked", "This account is blocked")
+			return nil, blockedError(u)
 		case "inactive":
 			return nil, httpx.Forbidden("account_inactive", "This account is inactive")
 		}
@@ -464,6 +470,12 @@ func (s *Service) Refresh(ctx context.Context, rawRefresh, ua, ip string) (*Toke
 	if err != nil {
 		return nil, httpx.Unauthorized("invalid_refresh", "User no longer exists")
 	}
+	// A disabled / suspended / blocked account must not be able to keep a
+	// session alive by refreshing (e.g. an employee who was just disabled).
+	if u.Status != "active" {
+		_ = s.repo.RevokeAllForUser(ctx, u.ID)
+		return nil, httpx.Unauthorized("invalid_refresh", "This account is no longer active")
+	}
 	return s.issueForUser(ctx, u.ID, u.AccountType, u.Email, ua, ip)
 }
 
@@ -494,9 +506,17 @@ func (s *Service) RequestPasswordReset(ctx context.Context, accountType, email, 
 	if err != nil {
 		return err
 	}
-	// Blocked/suspended accounts cannot reset; stay silent to avoid enumeration.
-	if u.Status == "blocked" || u.Status == "suspended" {
+	// Blocked/suspended/disabled accounts cannot reset; stay silent to avoid
+	// enumeration.
+	if u.Status != "active" {
 		return nil
+	}
+	// An invited employee who has not finished first-login setup must go through
+	// the invitation flow (temporary password + emailed code), not a reset link.
+	if accountType == "admin" {
+		if gate, gerr := s.repo.GetStaffGate(ctx, u.ID); gerr == nil && gate != nil && gate.MustChangePassword {
+			return nil
+		}
 	}
 
 	rawToken := generateResetToken()
@@ -559,6 +579,9 @@ func (s *Service) Me(ctx context.Context, userID string) (*AuthUser, error) {
 	u, err := s.repo.FindUserByID(ctx, userID)
 	if err != nil {
 		return nil, httpx.NotFound("user_not_found", "User not found")
+	}
+	if u.Status != "active" {
+		return nil, httpx.Forbidden("account_inactive", "This account is no longer active")
 	}
 	roles, perms, err := s.repo.LoadRolesAndPermissions(ctx, userID)
 	if err != nil {
@@ -699,4 +722,15 @@ func slugify(s string) string {
 // clientMeta extracts user agent + IP from a Fiber ctx (shared helper).
 func clientMeta(c *fiber.Ctx) (ua, ip string) {
 	return c.Get("User-Agent"), c.IP()
+}
+
+// blockedError builds the login error for a blocked account, including the
+// reason the admin recorded so the user knows why they cannot sign in.
+func blockedError(u *UserRecord) error {
+	reason := strings.TrimSpace(u.BlockReason)
+	if reason == "" {
+		return httpx.Forbidden("account_blocked", "Your account has been blocked. Please contact support.")
+	}
+	return httpx.Forbidden("account_blocked",
+		"Your account has been blocked. Reason: "+reason+". If you think this is a mistake, please contact support.")
 }

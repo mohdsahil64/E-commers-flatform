@@ -48,7 +48,7 @@ const deliveryMsg = ref('')
 
 // Real seller identity for this product (resolved from the storefront listing,
 // since the product-detail payload only carries created_by_seller as a UUID).
-const seller = ref<{ name: string; slug: string } | null>(null)
+const seller = ref<{ name: string; slug: string; logo_key: string } | null>(null)
 
 async function loadProduct(slug: string) {
   loading.value = true
@@ -81,7 +81,7 @@ async function loadProduct(slug: string) {
       pub.products({ q: p.title, page_size: 10 })
         .then(res => {
           const card = (res.data as ListingCard[] | undefined)?.find(c => c.product_id === p.id)
-          if (card) seller.value = { name: card.seller_name, slug: card.seller_slug }
+          if (card) seller.value = { name: card.seller_name, slug: card.seller_slug, logo_key: card.seller_logo_key || '' }
         })
         .catch(() => {}),
       // Related / "You might also like": popular products, current one removed.
@@ -113,6 +113,11 @@ const primaryImage = computed(() => {
 function nextImg() { if (images.value.length) activeImg.value = (activeImg.value + 1) % images.value.length }
 function prevImg() { if (images.value.length) activeImg.value = (activeImg.value - 1 + images.value.length) % images.value.length }
 function selectImg(i: number) { activeImg.value = i }
+
+// Seller store logo (empty when the seller hasn't uploaded one).
+const sellerLogoUrl = computed(() =>
+  seller.value?.logo_key ? resolveMediaUrl(MEDIA_BASE, seller.value.logo_key) : ''
+)
 
 // Swipe support for the main image on touch devices.
 let touchStartX = 0
@@ -475,8 +480,9 @@ function closeAllReviews() { allReviewsOpen.value = false }
               :to="seller ? `/seller/${seller.slug}` : undefined"
               class="group flex min-w-0 items-center gap-2"
             >
-              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stone-100">
-                <Store :size="16" class="text-stone-500" />
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-100">
+                <img v-if="sellerLogoUrl" :src="sellerLogoUrl" :alt="seller?.name || 'Store logo'" class="h-full w-full object-cover" />
+                <Store v-else :size="16" class="text-stone-500" />
               </div>
               <div class="min-w-0">
                 <p class="truncate text-sm font-medium text-ink group-hover:underline">

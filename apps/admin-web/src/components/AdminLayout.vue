@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { RouterLink, useRouter, useRoute } from 'vue-router'
 import {
   LayoutDashboard, Store, ShieldCheck, Users, Package, PackageCheck,
-  FolderTree, Tag, Sliders, ShoppingCart, Truck, RotateCcw, RefreshCcw,
+  FolderTree, Tag, Sliders, ShoppingCart, Truck, RotateCcw,
   CreditCard, Wallet, Ticket, Megaphone, Layers, Image, Box, BarChart3,
-  UserCog, KeyRound, ScrollText, Settings, Menu, X, LogOut, LifeBuoy,
+  KeyRound, Settings, Menu, X, LogOut, LifeBuoy, Headset,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { BRAND } from '@carlitos/shared'
@@ -35,9 +35,9 @@ const groups = [
     links: [
       { label: 'Orders',     to: '/orders',    icon: ShoppingCart },
       { label: 'Shipping',   to: '/shipping',  icon: Truck },
-      { label: 'Returns',    to: '/returns',   icon: RotateCcw },
-      { label: 'Refunds',    to: '/refunds',   icon: RefreshCcw },
-      { label: 'Help & Support', to: '/support', icon: LifeBuoy },
+      { label: 'Returns & Refunds', to: '/returns', icon: RotateCcw },
+      { label: 'Customer Support', to: '/support', icon: LifeBuoy },
+      { label: 'Seller Support', to: '/seller-support', icon: Headset },
       { label: 'Packaging',  to: '/packaging', icon: Box },
     ],
   },
@@ -62,13 +62,31 @@ const groups = [
   {
     title: 'System',
     links: [
-      { label: 'Users',      to: '/users',      icon: UserCog },
-      { label: 'Roles',      to: '/roles',      icon: KeyRound },
-      { label: 'Audit Logs', to: '/audit-logs', icon: ScrollText },
+      { label: 'Employees & Roles', to: '/roles', icon: KeyRound },
       { label: 'Settings',   to: '/settings',   icon: Settings },
     ],
   },
 ]
+
+// Only show the pages this person is allowed to open. Each link is resolved to
+// its route name and checked against PAGE_ACCESS, so the sidebar can never
+// advertise a page the router would refuse. (A group with no visible link
+// disappears entirely.) Real enforcement is on the server for every API call.
+const visibleGroups = computed(() =>
+  groups
+    .map((g) => ({
+      ...g,
+      links: g.links.filter((l) => store.canAccess(router.resolve(l.to).name)),
+    }))
+    .filter((g) => g.links.length > 0),
+)
+
+// "ORDER_ADMIN" -> "Order Admin" (shown under the email).
+const roleLabel = computed(() => {
+  const r = store.user?.roles?.[0]
+  if (!r) return ''
+  return r.startsWith('CUSTOM_') ? 'Employee' : r.toLowerCase().split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')
+})
 
 watch(() => route.path, () => { sidebarOpen.value = false })
 
@@ -106,7 +124,7 @@ async function logout() {
       </div>
 
       <nav class="flex-1 overflow-y-auto p-3">
-        <div v-for="g in groups" :key="g.title" class="mb-4">
+        <div v-for="g in visibleGroups" :key="g.title" class="mb-4">
           <p class="px-3 pb-1.5 text-xs font-semibold uppercase tracking-wide text-stone-400">{{ g.title }}</p>
           <RouterLink
             v-for="l in g.links"
@@ -123,7 +141,10 @@ async function logout() {
       </nav>
 
       <div class="border-t border-stone-200 p-3">
-        <p class="mb-2 truncate px-1 text-xs text-stone-400">{{ store.user?.email }}</p>
+        <div class="mb-2 px-1">
+          <p class="truncate text-xs font-medium text-stone-600">{{ store.user?.full_name || store.user?.email }}</p>
+          <p class="truncate text-xs text-stone-400">{{ roleLabel }}<span v-if="roleLabel && store.user?.full_name"> · </span><span v-if="store.user?.full_name">{{ store.user?.email }}</span></p>
+        </div>
         <button class="btn-ghost w-full" @click="logout"><LogOut :size="15" /> Sign out</button>
       </div>
     </aside>

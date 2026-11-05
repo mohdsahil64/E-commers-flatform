@@ -18,14 +18,19 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
 // RegisterAdmin mounts admin coupon management (permission-gated).
 func (h *Handler) RegisterAdmin(r fiber.Router) {
-	g := r.Group("", auth.RequirePermission(auth.PermCouponManage))
-	g.Get("/coupons", h.list)
-	g.Post("/coupons", h.create)
-	g.Put("/coupons/:id", h.update)
-	g.Post("/coupons/:id/active", h.setActive)
-	g.Delete("/coupons/:id", h.remove)
-	g.Get("/coupons/redemptions", h.allRedemptions)
-	g.Get("/coupons/:id/redemptions", h.couponRedemptions)
+	// IMPORTANT: attach the permission to each route. Do NOT use
+	// r.Group("", middleware) here: in Fiber that registers the middleware for
+	// the whole admin prefix, so it would also gate every admin route registered
+	// AFTER coupons (returns, support, customers, settlements, ...) behind
+	// coupon.manage and lock out employees who legitimately lack it.
+	manage := auth.RequirePermission(auth.PermCouponManage)
+	r.Get("/coupons", manage, h.list)
+	r.Post("/coupons", manage, h.create)
+	r.Put("/coupons/:id", manage, h.update)
+	r.Post("/coupons/:id/active", manage, h.setActive)
+	r.Delete("/coupons/:id", manage, h.remove)
+	r.Get("/coupons/redemptions", manage, h.allRedemptions)
+	r.Get("/coupons/:id/redemptions", manage, h.couponRedemptions)
 }
 
 // RegisterCustomer mounts the authenticated customer coupon preview endpoint.

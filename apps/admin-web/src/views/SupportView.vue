@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, nextTick } from 'vue'
+import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
 import {
   LifeBuoy, Package, X, CheckCircle2, Clock, Eye, Send, Store, ShieldCheck, Lock,
 } from 'lucide-vue-next'
-import type { SupportTicket } from '@carlitos/types'
-import { admin, MEDIA_BASE } from '@/api'
-import { formatDate, resolveMediaUrl, extractApiError } from '@carlitos/shared'
+import type { SupportTicket, SupportMessage, SupportSocketEvent } from '@carlitos/types'
+import { admin, MEDIA_BASE, api, tokenStore } from '@/api'
+import { formatDate, resolveMediaUrl, extractApiError, connectSupportSocket } from '@carlitos/shared'
 
 const tickets = ref<SupportTicket[]>([])
 const loading = ref(true)
@@ -25,8 +25,8 @@ const resolution  = ref('')
 const resolving   = ref(false)
 const timelineEl  = ref<HTMLElement | null>(null)
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  if (!silent) loading.value = true
   try {
     const params: { scope?: 'all'; status?: string } = {}
     if (scope.value === 'all') params.scope = 'all'
@@ -37,13 +37,51 @@ async function load() {
       detail.value = fresh ?? null
     }
   } catch (e) {
-    error.value = extractApiError(e)
-    tickets.value = []
+    if (!silent) {
+      error.value = extractApiError(e)
+      tickets.value = []
+    }
   } finally {
     loading.value = false
   }
 }
-onMounted(load)
+
+/* ── Live updates (WebSocket) ──────────────────────────────────── */
+let socket: { close: () => void } | null = null
+
+function applyMessage(ticketId: string, msg: SupportMessage, status?: SupportTicket['status']) {
+  const copies = new Set<SupportTicket>()
+  const inList = tickets.value.find(t => t.id === ticketId)
+  if (inList) copies.add(inList)
+  if (detail.value?.id === ticketId) copies.add(detail.value)
+  for (const t of copies) {
+    if (!t.messages.some(m => m.id === msg.id)) t.messages.push(msg)
+    if (status) t.status = status
+  }
+  if (detail.value?.id === ticketId) nextTick(scrollTimeline)
+}
+
+function handleSocketEvent(ev: SupportSocketEvent) {
+  if (ev.scope) return // seller → admin ticket events belong to the Seller Support page
+  if (ev.type === 'ticket_changed') { load(true); return }
+  // Messages for tickets outside the current filter are ignored; a filter
+  // change refetches them anyway.
+  if (ev.message) applyMessage(ev.ticket_id, ev.message, ev.status)
+}
+
+onMounted(() => {
+  load()
+  socket = connectSupportSocket<SupportSocketEvent>({
+    baseURL: api.http.defaults.baseURL || '',
+    getToken: () => tokenStore.getAccess(),
+    onEvent: handleSocketEvent,
+    onOpen: (reconnected) => { if (reconnected) load(true) },
+    beforeReconnect: async () => { await admin.supportTickets() },
+  })
+})
+onBeforeUnmount(() => socket?.close())
+
+
 
 function setScope(s: 'mine' | 'all') { scope.value = s; load() }
 function setStatus(s: typeof status.value) { status.value = s; load() }
@@ -69,11 +107,11 @@ function scrollTimeline() {
 async function sendReply() {
   if (!detail.value || !replyBody.value.trim()) return
   replying.value = true; error.value = ''
+  const ticketId = detail.value.id
   try {
-    await admin.replySupportTicket(detail.value.id, replyBody.value.trim())
+    const msg = await admin.replySupportTicket(ticketId, replyBody.value.trim())
     replyBody.value = ''
-    await load()
-    nextTick(scrollTimeline)
+    if (msg?.id) applyMessage(ticketId, msg)
   } catch (e) { error.value = extractApiError(e) }
   finally { replying.value = false }
 }
@@ -119,7 +157,7 @@ function authorLabel(role: string, t: SupportTicket) {
 <template>
   <div>
     <div class="page-header">
-      <h1 class="page-title">Help &amp; Support</h1>
+      <h1 class="page-title">Customer Support</h1>
       <p class="text-sm text-stone-500">
         Handle customer requests for payment, login, account and other issues.
         Product issues are handled by sellers — shown here read-only for auditing.
@@ -263,7 +301,16 @@ function authorLabel(role: string, t: SupportTicket) {
                           ? 'rounded-bl-sm bg-stone-100 text-stone-500 text-xs italic'
                           : 'rounded-br-sm bg-ink text-white')"
                   >
-                    {{ m.body }}
+                    <a v-if="m.image_key" :href="resolveMediaUrl(MEDIA_BASE, m.image_key)" target="_blank" rel="noopener" class="block">
+                      <img
+                        :src="resolveMediaUrl(MEDIA_BASE, m.image_key)"
+                        alt="Shared photo"
+                        class="max-h-56 w-full rounded-lg object-cover"
+                        :class="m.body ? 'mb-1.5' : ''"
+                        loading="lazy"
+                      />
+                    </a>
+                    <template v-if="m.body">{{ m.body }}</template>
                   </div>
                 </div>
               </div>

@@ -46,7 +46,9 @@ async function load() {
   order.value = await seller.order(route.params.id as string).catch(() => null)
   try {
     const all = await seller.shipments() as Shipment[]
-    shipment.value = (all || []).find(s => s.order_id === (route.params.id as string)) || null
+    // Newest first: take the latest shipment that is still in play. A cancelled
+    // one is ignored so the order can be shipped again.
+    shipment.value = (all || []).find(s => s.order_id === (route.params.id as string) && s.status !== 'cancelled') || null
   } catch { shipment.value = null }
   try { history.value = (await seller.orderHistory(route.params.id as string)) as HistoryEvent[] } catch { history.value = [] }
 }

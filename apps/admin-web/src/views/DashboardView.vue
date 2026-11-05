@@ -7,7 +7,19 @@ import {
 } from 'lucide-vue-next'
 import type { Seller, Product, Order } from '@carlitos/types'
 import { admin } from '@/api'
+import { useAuthStore } from '@/stores/auth'
 import { formatINR, formatDate, orderStatusLabel } from '@carlitos/shared'
+
+// What this person may see. The server enforces the same permissions on every
+// call; here we simply avoid asking for data they can't have and hide the
+// panels that would otherwise be empty or show an error.
+const store = useAuthStore()
+const canOrders   = computed(() => store.hasPermission('order.view'))
+const canSellers  = computed(() => store.hasPermission('seller.view'))
+const canProducts = computed(() => store.hasPermission('product.view'))
+const canReturns  = computed(() => store.hasPermission('return.manage') || store.hasPermission('refund.manage'))
+const canSettle   = computed(() => store.hasPermission('settlement.view'))
+const hasAnyPanel = computed(() => canOrders.value || canSellers.value || canProducts.value || canReturns.value || canSettle.value)
 
 const pendingSellers  = ref<Seller[]>([])
 const pendingProducts = ref<Product[]>([])
@@ -21,11 +33,11 @@ onMounted(async () => {
   try {
     const emptyRes = { data: [], meta: {} as { total?: number } }
     const [ps, pp, ao, allO, rt] = await Promise.all([
-      admin.sellers({ status: 'under_review' }).catch(() => emptyRes),
-      admin.products({ status: 'submitted' }).catch(() => emptyRes),
-      admin.orders({ page_size: 6 }).catch(() => emptyRes),
-      admin.orders({ page_size: 100 }).catch(() => emptyRes),
-      admin.returns().catch(() => []),
+      canSellers.value  ? admin.sellers({ status: 'under_review' }).catch(() => emptyRes) : Promise.resolve(emptyRes),
+      canProducts.value ? admin.products({ status: 'submitted' }).catch(() => emptyRes) : Promise.resolve(emptyRes),
+      canOrders.value   ? admin.orders({ page_size: 6 }).catch(() => emptyRes) : Promise.resolve(emptyRes),
+      canOrders.value   ? admin.orders({ page_size: 100 }).catch(() => emptyRes) : Promise.resolve(emptyRes),
+      canReturns.value  ? admin.returns().catch(() => []) : Promise.resolve([]),
     ])
     pendingSellers.value  = (ps.data as Seller[]) || []
     pendingProducts.value = (pp.data as Product[]) || []
@@ -61,34 +73,43 @@ function statusClass(s: string) {
       </div>
     </div>
 
+    <!-- Nothing operational to show for this role -->
+    <div v-if="!hasAnyPanel" class="rounded-xl border border-stone-200 bg-white p-8 text-center">
+      <p class="text-base font-semibold text-ink">Welcome<span v-if="store.user?.full_name">, {{ store.user.full_name }}</span></p>
+      <p class="mx-auto mt-1.5 max-w-md text-sm text-stone-500">
+        Use the menu on the left to open the sections available to your role.
+        You can see your access any time under <RouterLink to="/settings" class="underline">Settings</RouterLink>.
+      </p>
+    </div>
+
     <!-- KPI grid -->
-    <div class="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-      <div class="stat">
+    <div v-if="hasAnyPanel" class="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div v-if="canOrders" class="stat">
         <div class="flex items-center justify-between mb-2"><p class="text-label-sm">GMV</p><TrendingUp :size="16" class="text-stone-400" /></div>
         <div v-if="loading" class="skeleton h-6 w-20 rounded" />
         <p v-else class="text-lg font-semibold">{{ formatINR(gmv) }}</p>
       </div>
-      <div class="stat">
+      <div v-if="canOrders" class="stat">
         <div class="flex items-center justify-between mb-2"><p class="text-label-sm">Orders</p><ShoppingCart :size="16" class="text-stone-400" /></div>
         <div v-if="loading" class="skeleton h-6 w-12 rounded" />
         <p v-else class="text-lg font-semibold">{{ totals.orders }}</p>
       </div>
-      <div class="stat">
+      <div v-if="canSellers" class="stat">
         <div class="flex items-center justify-between mb-2"><p class="text-label-sm">Seller Approvals</p><Store :size="16" class="text-stone-400" /></div>
         <div v-if="loading" class="skeleton h-6 w-10 rounded" />
         <p v-else class="text-lg font-semibold" :class="totals.sellers ? 'text-amber-600' : ''">{{ totals.sellers }}</p>
       </div>
-      <div class="stat">
+      <div v-if="canProducts" class="stat">
         <div class="flex items-center justify-between mb-2"><p class="text-label-sm">Product Approvals</p><Package :size="16" class="text-stone-400" /></div>
         <div v-if="loading" class="skeleton h-6 w-10 rounded" />
         <p v-else class="text-lg font-semibold" :class="totals.products ? 'text-amber-600' : ''">{{ totals.products }}</p>
       </div>
-      <div class="stat">
+      <div v-if="canReturns" class="stat">
         <div class="flex items-center justify-between mb-2"><p class="text-label-sm">Returns</p><RotateCcw :size="16" class="text-stone-400" /></div>
         <div v-if="loading" class="skeleton h-6 w-10 rounded" />
         <p v-else class="text-lg font-semibold">{{ pendingReturns }}</p>
       </div>
-      <div class="stat">
+      <div v-if="canSettle" class="stat">
         <div class="flex items-center justify-between mb-2"><p class="text-label-sm">Settlements</p><Wallet :size="16" class="text-stone-400" /></div>
         <RouterLink to="/settlements" class="text-sm text-stone-500 hover:text-ink underline">View</RouterLink>
       </div>
@@ -107,9 +128,9 @@ function statusClass(s: string) {
       </div>
     </div>
 
-    <div class="grid gap-6 lg:grid-cols-2">
+    <div v-if="canSellers || canProducts" class="grid gap-6 lg:grid-cols-2">
       <!-- Pending sellers -->
-      <section>
+      <section v-if="canSellers">
         <div class="section-header mb-3">
           <h2 class="text-h4">Sellers Awaiting Review</h2>
           <RouterLink to="/sellers" class="flex items-center gap-1 text-sm text-stone-500 hover:text-ink">View all <ArrowRight :size="13" /></RouterLink>
@@ -125,7 +146,7 @@ function statusClass(s: string) {
       </section>
 
       <!-- Pending products -->
-      <section>
+      <section v-if="canProducts">
         <div class="section-header mb-3">
           <h2 class="text-h4">Products Pending Approval</h2>
           <RouterLink to="/products" class="flex items-center gap-1 text-sm text-stone-500 hover:text-ink">View all <ArrowRight :size="13" /></RouterLink>
@@ -142,7 +163,7 @@ function statusClass(s: string) {
     </div>
 
     <!-- Recent orders -->
-    <section class="mt-6">
+    <section v-if="canOrders" class="mt-6">
       <div class="section-header mb-3">
         <h2 class="text-h4">Recent Orders</h2>
         <RouterLink to="/orders" class="flex items-center gap-1 text-sm text-stone-500 hover:text-ink">View all <ArrowRight :size="13" /></RouterLink>

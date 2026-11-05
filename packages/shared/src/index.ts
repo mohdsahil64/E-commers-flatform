@@ -205,3 +205,84 @@ export function extractApiError(err: unknown): string {
     'Something went wrong. Please try again.'
   )
 }
+
+// ---------------------------------------------------------------------
+// Real-time support chat socket
+// ---------------------------------------------------------------------
+export interface SupportSocketOptions<E> {
+  /** API base URL, e.g. http://localhost:8080/api/v1 */
+  baseURL: string
+  /** Returns the current access token (read fresh on every connect). */
+  getToken: () => string | null
+  /** Called for every event pushed by the server. */
+  onEvent: (event: E) => void
+  /** Called when the socket opens. `reconnected` is true after a drop, so the
+   *  caller can resync anything it may have missed while offline. */
+  onOpen?: (reconnected: boolean) => void
+  /** Awaited before each RE-connect; hit any authenticated API here so an
+   *  expired access token is refreshed before the socket tries again. */
+  beforeReconnect?: () => void | Promise<void>
+}
+
+/**
+ * connectSupportSocket opens the live support-chat WebSocket and keeps it
+ * alive with exponential-backoff reconnects. Returns a handle to close it.
+ */
+export function connectSupportSocket<E = unknown>(opts: SupportSocketOptions<E>): { close: () => void } {
+  let ws: WebSocket | null = null
+  let closed = false
+  let attempt = 0
+  let everOpened = false
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const wsBase = opts.baseURL.replace(/\/$/, '').replace(/^http/i, 'ws')
+
+  function schedule() {
+    if (closed) return
+    const delay = Math.min(1000 * 2 ** attempt, 15000)
+    attempt += 1
+    timer = setTimeout(connect, delay)
+  }
+
+  async function connect() {
+    if (closed) return
+    if (attempt > 0 && opts.beforeReconnect) {
+      try { await opts.beforeReconnect() } catch { /* offline / refresh failed: retry below */ }
+      if (closed) return
+    }
+    const token = opts.getToken()
+    if (!token) { schedule(); return }
+
+    try {
+      ws = new WebSocket(`${wsBase}/public/support/ws?token=${encodeURIComponent(token)}`)
+    } catch {
+      schedule()
+      return
+    }
+    ws.onopen = () => {
+      const reconnected = everOpened
+      everOpened = true
+      attempt = 0
+      opts.onOpen?.(reconnected)
+    }
+    ws.onmessage = (msg) => {
+      try { opts.onEvent(JSON.parse(String(msg.data)) as E) } catch { /* ignore malformed frames */ }
+    }
+    ws.onclose = () => { ws = null; schedule() }
+    ws.onerror = () => { try { ws?.close() } catch { /* noop */ } }
+  }
+
+  void connect()
+
+  return {
+    close() {
+      closed = true
+      if (timer) clearTimeout(timer)
+      try { ws?.close() } catch { /* noop */ }
+      ws = null
+    },
+  }
+}
+
+// Shipment helpers (labels, stages, progress steps) shared by seller + admin.
+export * from './shipments'

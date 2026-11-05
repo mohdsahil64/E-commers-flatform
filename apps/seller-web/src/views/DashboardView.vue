@@ -6,9 +6,10 @@ import {
   ArrowRight, IndianRupee, PackageCheck, RotateCcw, Repeat, Boxes,
 } from 'lucide-vue-next'
 import type { Seller, Order, Product } from '@carlitos/types'
-import { seller } from '@/api'
+import { seller, MEDIA_BASE } from '@/api'
 import { useAuthStore } from '@/stores/auth'
-import { formatINR, formatDate, orderStatusLabel, SELLER_STATUS_LABELS } from '@carlitos/shared'
+import PayoutCards from '@/components/PayoutCards.vue'
+import { formatINR, formatDate, orderStatusLabel, resolveMediaUrl, SELLER_STATUS_LABELS } from '@carlitos/shared'
 
 const auth      = useAuthStore()
 const profile   = ref<Seller | null>(null)
@@ -28,6 +29,8 @@ onMounted(async () => {
       seller.products({ status: 'approved', page_size: 1 }).catch(() => ({ data: [] as Product[], meta: { total: 0 } })),
     ])
     profile.value   = p
+    // Keep the shared auth store in sync with the fresh status from the server.
+    if (p?.status) await auth.refreshSellerStatus()
     orders.value    = (o as any).data || []
     returns.value   = Array.isArray(r) ? r : []
     inventory.value = (inv as any)?.meta?.total ?? ((inv as any)?.data?.length || 0)
@@ -114,11 +117,16 @@ function statusClass(s: string) {
     <!-- Page header: store name + live approval status.
          (The "Dashboard" title lives in the top bar, so it's not repeated here.) -->
     <div class="page-header">
-      <div class="min-w-0">
-        <p class="text-label-sm">Store Name</p>
-        <div class="mt-0.5 flex flex-wrap items-center gap-2">
-          <h1 class="page-title truncate">{{ profile?.store_name || 'Your store' }}</h1>
-          <span :class="['badge', statusBadgeClass(storeStatus)]">{{ storeStatusLabel }}</span>
+      <div class="flex min-w-0 items-center gap-3">
+        <div v-if="profile?.store_logo_key" class="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-stone-200 bg-stone-50">
+          <img :src="resolveMediaUrl(MEDIA_BASE, profile.store_logo_key)" :alt="profile.store_name" class="h-full w-full object-cover" />
+        </div>
+        <div class="min-w-0">
+          <p class="text-label-sm">Store Name</p>
+          <div class="mt-0.5 flex flex-wrap items-center gap-2">
+            <h1 class="page-title truncate">{{ profile?.store_name || 'Your store' }}</h1>
+            <span :class="['badge', statusBadgeClass(storeStatus)]">{{ storeStatusLabel }}</span>
+          </div>
         </div>
       </div>
 
@@ -241,6 +249,8 @@ function statusClass(s: string) {
         <p class="mt-1 text-xs text-stone-500 truncate">All orders placed</p>
       </div>
     </div>
+
+    <PayoutCards compact class="mb-6 block" />
 
     <!-- ── Last 30 days ── -->
     <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-stone-400">1 Month</p>

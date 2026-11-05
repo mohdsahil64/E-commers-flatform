@@ -52,6 +52,7 @@ type ListingCard struct {
 	SellerID     string  `json:"seller_id"`
 	SellerName   string  `json:"seller_name"`
 	SellerSlug   string  `json:"seller_slug"`
+	SellerLogoKey string `json:"seller_logo_key"`
 	RankScore    float64 `json:"rank_score"`
 	AvailableQty int     `json:"available_quantity"`
 	InStock      bool    `json:"in_stock"`
@@ -157,7 +158,7 @@ func (r *StorefrontRepository) Search(ctx context.Context, f ListingFilter) ([]L
 	       coalesce((SELECT file_key FROM product_images WHERE product_id = p.id ORDER BY is_primary DESC, sort_order LIMIT 1),''),
 	       sl.selling_price AS min_price, sl.mrp,
 	       p.rating_avg, p.rating_count,
-	       s.id, s.store_name, s.store_slug,
+	       s.id, s.store_name, s.store_slug, coalesce(s.store_logo_key,''),
 	       coalesce(rk.score,0) AS rank_score,
 	       COALESCE(inv.available_quantity,0) AS available_qty ` + base +
 		fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", orderBy, len(args)-1, len(args))
@@ -172,7 +173,7 @@ func (r *StorefrontRepository) Search(ctx context.Context, f ListingFilter) ([]L
 		var c ListingCard
 		if err := rows.Scan(&c.ProductID, &c.Title, &c.Slug, &c.BrandName, &c.PrimaryImage,
 			&c.MinPrice, &c.MRP, &c.RatingAvg, &c.RatingCount,
-			&c.SellerID, &c.SellerName, &c.SellerSlug, &c.RankScore, &c.AvailableQty); err != nil {
+			&c.SellerID, &c.SellerName, &c.SellerSlug, &c.SellerLogoKey, &c.RankScore, &c.AvailableQty); err != nil {
 			return nil, 0, err
 		}
 		c.InStock = c.AvailableQty > 0

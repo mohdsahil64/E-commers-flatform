@@ -34,6 +34,25 @@ type Shipment struct {
 	Direction          string `json:"direction"`
 	TrackingURL        string `json:"tracking_url"`
 	ProviderShipmentID string `json:"provider_shipment_id,omitempty"`
+
+	// Context shown on the Shipments / Shipping pages.
+	StoreName         string     `json:"store_name"`
+	CreatedAt         time.Time  `json:"created_at"`
+	PickupScheduledAt *time.Time `json:"pickup_scheduled_at"`
+	ShippedAt         *time.Time `json:"shipped_at"`
+	DeliveredAt       *time.Time `json:"delivered_at"`
+	FreightCharge     float64    `json:"freight_charge"`
+	CustomerName      string     `json:"customer_name"`
+	ShipCity          string     `json:"ship_city"`
+	ShipState         string     `json:"ship_state"`
+	ShipPincode       string     `json:"ship_pincode"`
+	PaymentMethod     string     `json:"payment_method"`
+	// CODAmount is what the courier/seller must collect (0 for prepaid).
+	CODAmount float64 `json:"cod_amount"`
+	ItemCount int     `json:"item_count"`
+	ItemTitle string  `json:"item_title"`
+	// Attention is a short reason when the shipment looks stuck or failed.
+	Attention string `json:"attention"`
 }
 
 // StatusNotifier lets fulfillment inform the customer of shipment status
@@ -200,11 +219,14 @@ func (s *Service) CreateForOrder(ctx context.Context, orderID, sellerID string) 
 	}
 	sh, err := s.Get(ctx, shipmentID)
 	if err == nil && sh != nil {
+		s.addEvent(ctx, s.repo.pool, shipmentID, "label_generated", "",
+			"Shipment booked with "+nonEmptyStr(sh.CourierName, "the courier")+" · AWB "+sh.AWBNumber)
 		// Best-effort: request a courier pickup right away.
 		if sh.ProviderShipmentID != "" {
 			_ = s.courier.SchedulePickup(ctx, sh.ProviderShipmentID, time.Now().Add(24*time.Hour))
 			_, _ = s.repo.pool.Exec(ctx,
 				`UPDATE shipments SET status='pickup_scheduled', pickup_scheduled_at=now() WHERE id=$1`, shipmentID)
+			s.addEvent(ctx, s.repo.pool, shipmentID, "pickup_scheduled", "", "Courier pickup requested")
 		}
 		// Notify the customer their order is being shipped.
 		go s.notify(context.Background(), orderID, "Your order has shipped",
@@ -282,6 +304,8 @@ func (s *Service) SelfShip(ctx context.Context, orderID, sellerID string) (*Ship
 	if err != nil {
 		return nil, err
 	}
+	s.addEvent(ctx, s.repo.pool, shipmentID, "pickup_scheduled", "",
+		"Self-ship created · print the label, pack and deliver it yourself")
 	return s.Get(ctx, shipmentID)
 }
 
@@ -352,9 +376,12 @@ func (s *Service) SelfShipLabelData(ctx context.Context, shipmentID, sellerID st
 // MarkShipped transitions a shipment (and its items) to shipped, and notifies
 // the customer.
 func (s *Service) MarkShipped(ctx context.Context, shipmentID, sellerID string) error {
-	if err := s.transition(ctx, shipmentID, sellerID, "in_transit", "shipped"); err != nil {
+	// Only a shipment that is still waiting to leave can be marked as shipped.
+	if err := s.transition(ctx, shipmentID, sellerID, "in_transit", "shipped",
+		[]string{"created", "label_generated", "pickup_scheduled"}); err != nil {
 		return err
 	}
+	s.addEvent(ctx, s.repo.pool, shipmentID, "in_transit", "", "Marked as shipped by the seller")
 	sh, err := s.Get(ctx, shipmentID)
 	if err == nil && sh != nil {
 		go s.notify(context.Background(), sh.OrderID, "Your order has shipped",
@@ -368,13 +395,14 @@ func (s *Service) MarkShipped(ctx context.Context, shipmentID, sellerID string) 
 func (s *Service) MarkDelivered(ctx context.Context, shipmentID, sellerID string) error {
 	if err := pgx.BeginFunc(ctx, s.repo.pool, func(tx pgx.Tx) error {
 		ct, err := tx.Exec(ctx,
-			`UPDATE shipments SET status='delivered', delivered_at=now() WHERE id=$1 AND seller_id=$2`,
+			`UPDATE shipments SET status='delivered', delivered_at=now(), shipped_at=COALESCE(shipped_at, now())
+			 WHERE id=$1 AND seller_id=$2 AND status NOT IN ('delivered','cancelled','rto')`,
 			shipmentID, sellerID)
 		if err != nil {
 			return err
 		}
 		if ct.RowsAffected() == 0 {
-			return httpx.NotFound("shipment_not_found", "Shipment not found")
+			return s.explainBlocked(ctx, shipmentID, sellerID)
 		}
 		_, err = tx.Exec(ctx, `
 			UPDATE order_items SET item_status='delivered', delivered_at=now()
@@ -383,6 +411,7 @@ func (s *Service) MarkDelivered(ctx context.Context, shipmentID, sellerID string
 	}); err != nil {
 		return err
 	}
+	s.addEvent(ctx, s.repo.pool, shipmentID, "delivered", "", "Marked as delivered by the seller")
 	sh, err := s.Get(ctx, shipmentID)
 	if err == nil && sh != nil {
 		go s.notify(context.Background(), sh.OrderID, "Your order was delivered",
@@ -392,9 +421,11 @@ func (s *Service) MarkDelivered(ctx context.Context, shipmentID, sellerID string
 }
 
 // Track returns live tracking events from the courier for a shipment.
-func (s *Service) Track(ctx context.Context, shipmentID string) ([]shipping.TrackingEvent, error) {
+func (s *Service) Track(ctx context.Context, shipmentID, sellerID string) ([]shipping.TrackingEvent, error) {
 	var awb string
-	if err := s.repo.pool.QueryRow(ctx, `SELECT coalesce(awb_number,'') FROM shipments WHERE id=$1`, shipmentID).
+	// Scoped to the calling seller: one seller must not read another's shipment.
+	if err := s.repo.pool.QueryRow(ctx,
+		`SELECT coalesce(awb_number,'') FROM shipments WHERE id=$1 AND seller_id=$2`, shipmentID, sellerID).
 		Scan(&awb); err != nil {
 		return nil, httpx.NotFound("shipment_not_found", "Shipment not found")
 	}
@@ -402,11 +433,9 @@ func (s *Service) Track(ctx context.Context, shipmentID string) ([]shipping.Trac
 	if err != nil {
 		return nil, httpx.Internal("tracking error")
 	}
-	// Persist events for history (best-effort).
+	// Persist events for history (best-effort, never duplicated).
 	for _, e := range events {
-		_, _ = s.repo.pool.Exec(ctx, `
-			INSERT INTO shipment_tracking_events (shipment_id, status, location, description, event_time)
-			VALUES ($1,$2,$3,$4,$5)`, shipmentID, e.Status, e.Location, e.Description, e.EventTime)
+		s.addEventAt(ctx, s.repo.pool, shipmentID, e.Status, e.Location, e.Description, e.EventTime)
 	}
 	return events, nil
 }
@@ -443,7 +472,7 @@ func (s *Service) TrackForCustomerUser(ctx context.Context, orderID, userID stri
 		FROM shipments sh
 		JOIN orders o ON o.id = sh.order_id
 		JOIN customers c ON c.id = o.customer_id
-		WHERE sh.order_id = $1 AND c.user_id = $2
+		WHERE sh.order_id = $1 AND c.user_id = $2 AND sh.status <> 'cancelled'
 		ORDER BY sh.created_at DESC
 		LIMIT 1`, orderID, userID).
 		Scan(&shipmentID, &shipType, &awb, &courier, &status, &trackingURL)
@@ -459,10 +488,7 @@ func (s *Service) TrackForCustomerUser(ctx context.Context, orderID, userID stri
 	if shipType == "courier" && awb != "" {
 		if evs, terr := s.courier.Track(ctx, awb); terr == nil {
 			for _, e := range evs {
-				_, _ = s.repo.pool.Exec(ctx, `
-					INSERT INTO shipment_tracking_events (shipment_id, status, location, description, event_time)
-					VALUES ($1,$2,$3,$4,$5)
-					ON CONFLICT DO NOTHING`, shipmentID, e.Status, e.Location, e.Description, e.EventTime)
+				s.addEventAt(ctx, s.repo.pool, shipmentID, e.Status, e.Location, e.Description, e.EventTime)
 			}
 		}
 	}
@@ -505,7 +531,7 @@ func (s *Service) HandleWebhook(ctx context.Context, awb, status, location, desc
 	if awb == "" {
 		return nil
 	}
-	canonical := shipping.NormalizeStatus(status)
+	canonical := courierStatusToShipment(shipping.NormalizeStatus(status))
 
 	var shipmentID, orderID, courier, currentStatus string
 	err := s.repo.pool.QueryRow(ctx, `
@@ -519,23 +545,59 @@ func (s *Service) HandleWebhook(ctx context.Context, awb, status, location, desc
 		return err
 	}
 
-	// Append the tracking event.
-	_, _ = s.repo.pool.Exec(ctx, `
-		INSERT INTO shipment_tracking_events (shipment_id, status, location, description, event_time)
-		VALUES ($1,$2,$3,$4, now())`, shipmentID, canonical, location, nonEmptyStr(description, status))
+	// Append the tracking event (deduplicated, so courier retries are harmless).
+	s.addEvent(ctx, s.repo.pool, shipmentID, canonical, location, nonEmptyStr(description, status))
 
-	// Skip if this is the same terminal status we already recorded (idempotency).
-	if currentStatus == canonical {
-		return nil
+	s.applyStatus(ctx, shipmentID, orderID, courier, awb, currentStatus, canonical)
+	return nil
+}
+
+// courierStatusToShipment maps the courier's canonical status to one allowed by
+// the shipments.status CHECK constraint ("returned" is stored as "rto").
+func courierStatusToShipment(canonical string) string {
+	if canonical == "returned" {
+		return "rto"
 	}
+	return canonical
+}
 
-	// Map courier status → shipment + order-item status and notify.
+// statusRank orders the forward journey of a shipment.
+var statusRank = map[string]int{
+	"created": 0, "label_generated": 1, "pickup_scheduled": 2,
+	"picked_up": 3, "in_transit": 4, "out_for_delivery": 5, "delivered": 6,
+}
+
+// canAdvance reports whether a courier-reported status may replace the current
+// one. Delivered / RTO / cancelled are final, and a shipment never moves
+// backwards (webhooks can arrive late or out of order).
+func canAdvance(current, next string) bool {
+	if current == next {
+		return false
+	}
+	switch current {
+	case "delivered", "rto", "cancelled":
+		return false
+	}
+	switch next {
+	case "rto", "failed", "cancelled":
+		return true
+	}
+	return statusRank[next] > statusRank[current]
+}
+
+// applyStatus moves a shipment (and its order items) to a courier-reported
+// status and notifies the customer on the key milestones. It is shared by the
+// courier webhook and the manual "refresh tracking" action.
+func (s *Service) applyStatus(ctx context.Context, shipmentID, orderID, courier, awb, current, canonical string) {
+	if !canAdvance(current, canonical) {
+		return
+	}
 	itemStatus := ""
 	var headline, message string
 	switch canonical {
 	case "picked_up", "in_transit":
 		itemStatus = "shipped"
-		if currentStatus != "in_transit" && currentStatus != "shipped" {
+		if current != "in_transit" && current != "picked_up" && current != "out_for_delivery" {
 			headline, message = "Your order has shipped", "your order is on its way"
 		}
 	case "out_for_delivery":
@@ -544,19 +606,19 @@ func (s *Service) HandleWebhook(ctx context.Context, awb, status, location, desc
 	case "delivered":
 		itemStatus = "delivered"
 		headline, message = "Delivered", "your order has been delivered"
-	case "returned":
+	case "rto":
 		itemStatus = "return_received"
 	case "cancelled":
 		itemStatus = "cancelled"
 	}
 
-	_ = pgx.BeginFunc(ctx, s.repo.pool, func(tx pgx.Tx) error {
-		delivClause := ""
-		if canonical == "delivered" {
-			delivClause = ", delivered_at=now()"
-		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE shipments SET status=$2`+delivClause+` WHERE id=$1`, shipmentID, canonical); err != nil {
+	err := pgx.BeginFunc(ctx, s.repo.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			UPDATE shipments SET status=$2,
+			    shipped_at = CASE WHEN $2 IN ('picked_up','in_transit','out_for_delivery') AND shipped_at IS NULL
+			                      THEN now() ELSE shipped_at END,
+			    delivered_at = CASE WHEN $2 = 'delivered' THEN now() ELSE delivered_at END
+			WHERE id=$1`, shipmentID, canonical); err != nil {
 			return err
 		}
 		if itemStatus != "" {
@@ -570,23 +632,57 @@ func (s *Service) HandleWebhook(ctx context.Context, awb, status, location, desc
 		}
 		return nil
 	})
-
+	if err != nil {
+		return // keep the old status rather than notifying about a failed update
+	}
 	if headline != "" {
 		go s.notify(context.Background(), orderID, headline, message, courier, awb)
 	}
-	return nil
 }
 
-const shipmentCols = `s.id, s.order_id, coalesce(o.order_number,''), s.seller_id, s.provider,
-	coalesce(s.ship_type,'courier'), coalesce(s.awb_number,''), s.courier_name,
-	coalesce(s.label_key,''), s.status, s.direction, s.tracking_url,
-	coalesce(s.provider_shipment_id,'')`
+// shipmentSelect is the shared SELECT (columns + joins) for shipment rows. The
+// matching scan is scanShipment.
+const shipmentSelect = `
+	SELECT s.id, s.order_id, coalesce(o.order_number,''), s.seller_id, s.provider,
+	       coalesce(s.ship_type,'courier'), coalesce(s.awb_number,''), s.courier_name,
+	       coalesce(s.label_key,''), s.status, s.direction, s.tracking_url,
+	       coalesce(s.provider_shipment_id,''),
+	       coalesce(sl.store_name,''), s.created_at, s.pickup_scheduled_at, s.shipped_at,
+	       s.delivered_at, s.freight_charge,
+	       o.ship_contact_name, o.ship_city, o.ship_state, o.ship_pincode, o.payment_method,
+	       coalesce(it.qty,0), coalesce(it.gross,0), coalesce(it.title,'')
+	FROM shipments s
+	JOIN orders o ON o.id = s.order_id
+	LEFT JOIN sellers sl ON sl.id = s.seller_id
+	LEFT JOIN LATERAL (
+		SELECT sum(si.quantity)::int AS qty, sum(oi.gross_amount)::float8 AS gross,
+		       min(oi.product_title) AS title
+		FROM shipment_items si JOIN order_items oi ON oi.id = si.order_item_id
+		WHERE si.shipment_id = s.id
+	) it ON TRUE`
 
-// ListForSeller returns a seller's shipments.
+func scanShipment(row pgx.Row) (Shipment, error) {
+	var s Shipment
+	var gross float64
+	err := row.Scan(&s.ID, &s.OrderID, &s.OrderNumber, &s.SellerID, &s.Provider,
+		&s.ShipType, &s.AWBNumber, &s.CourierName, &s.LabelURL, &s.Status, &s.Direction,
+		&s.TrackingURL, &s.ProviderShipmentID,
+		&s.StoreName, &s.CreatedAt, &s.PickupScheduledAt, &s.ShippedAt, &s.DeliveredAt, &s.FreightCharge,
+		&s.CustomerName, &s.ShipCity, &s.ShipState, &s.ShipPincode, &s.PaymentMethod,
+		&s.ItemCount, &gross, &s.ItemTitle)
+	if err != nil {
+		return s, err
+	}
+	if s.PaymentMethod == "cod" {
+		s.CODAmount = gross
+	}
+	s.Attention = attentionReason(s.Status, s.ShipType, s.CreatedAt, s.ShippedAt, time.Now())
+	return s, nil
+}
+
+// ListForSeller returns a seller's shipments (newest first).
 func (s *Service) ListForSeller(ctx context.Context, sellerID string) ([]Shipment, error) {
-	rows, err := s.repo.pool.Query(ctx, `
-		SELECT `+shipmentCols+`
-		FROM shipments s JOIN orders o ON o.id = s.order_id
+	rows, err := s.repo.pool.Query(ctx, shipmentSelect+`
 		WHERE s.seller_id=$1 ORDER BY s.created_at DESC`, sellerID)
 	if err != nil {
 		return nil, err
@@ -597,10 +693,7 @@ func (s *Service) ListForSeller(ctx context.Context, sellerID string) ([]Shipmen
 
 // Get returns a single shipment.
 func (s *Service) Get(ctx context.Context, id string) (*Shipment, error) {
-	rows, err := s.repo.pool.Query(ctx, `
-		SELECT `+shipmentCols+`
-		FROM shipments s JOIN orders o ON o.id = s.order_id
-		WHERE s.id=$1`, id)
+	rows, err := s.repo.pool.Query(ctx, shipmentSelect+` WHERE s.id=$1`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -615,16 +708,20 @@ func (s *Service) Get(ctx context.Context, id string) (*Shipment, error) {
 	return &list[0], nil
 }
 
-func (s *Service) transition(ctx context.Context, shipmentID, sellerID, shipStatus, itemStatus string) error {
+// transition moves a seller's shipment (and its items) to a new status. The
+// UPDATE itself is guarded by the allowed current statuses, so two quick clicks
+// (or a click racing a courier webhook) can't apply a stale transition.
+func (s *Service) transition(ctx context.Context, shipmentID, sellerID, shipStatus, itemStatus string, from []string) error {
 	return pgx.BeginFunc(ctx, s.repo.pool, func(tx pgx.Tx) error {
 		ct, err := tx.Exec(ctx,
-			`UPDATE shipments SET status=$3, shipped_at=now() WHERE id=$1 AND seller_id=$2`,
-			shipmentID, sellerID, shipStatus)
+			`UPDATE shipments SET status=$3, shipped_at=COALESCE(shipped_at, now())
+			 WHERE id=$1 AND seller_id=$2 AND status = ANY($4)`,
+			shipmentID, sellerID, shipStatus, from)
 		if err != nil {
 			return err
 		}
 		if ct.RowsAffected() == 0 {
-			return httpx.NotFound("shipment_not_found", "Shipment not found")
+			return s.explainBlocked(ctx, shipmentID, sellerID)
 		}
 		_, err = tx.Exec(ctx, `
 			UPDATE order_items SET item_status=$2,
@@ -633,6 +730,22 @@ func (s *Service) transition(ctx context.Context, shipmentID, sellerID, shipStat
 			shipmentID, itemStatus)
 		return err
 	})
+}
+
+// explainBlocked turns "0 rows updated" into the right HTTP error: the shipment
+// doesn't exist for this seller, or it is in a state that doesn't allow the move.
+func (s *Service) explainBlocked(ctx context.Context, shipmentID, sellerID string) error {
+	var status string
+	err := s.repo.pool.QueryRow(ctx,
+		`SELECT status FROM shipments WHERE id=$1 AND seller_id=$2`, shipmentID, sellerID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return httpx.NotFound("shipment_not_found", "Shipment not found")
+	}
+	if err != nil {
+		return err
+	}
+	return httpx.Conflict("invalid_state", fmt.Sprintf(
+		"This shipment is already %s, so that action isn't available.", strings.ReplaceAll(status, "_", " ")))
 }
 
 func (s *Service) loadPickup(ctx context.Context, sellerID string) shipping.Address {
@@ -698,12 +811,10 @@ func estimateWeight(items []shipping.ShipmentItem) int {
 }
 
 func collect(rows pgx.Rows) ([]Shipment, error) {
-	var out []Shipment
+	out := []Shipment{}
 	for rows.Next() {
-		var s Shipment
-		if err := rows.Scan(&s.ID, &s.OrderID, &s.OrderNumber, &s.SellerID, &s.Provider,
-			&s.ShipType, &s.AWBNumber, &s.CourierName, &s.LabelURL, &s.Status, &s.Direction,
-			&s.TrackingURL, &s.ProviderShipmentID); err != nil {
+		s, err := scanShipment(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, s)

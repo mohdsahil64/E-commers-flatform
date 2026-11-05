@@ -21,6 +21,7 @@ type UserRecord struct {
 	PasswordHash string
 	FullName     string
 	Status       string
+	BlockReason  string // why an admin blocked the account (shown at login)
 }
 
 // Repository provides auth-related database access.
@@ -36,7 +37,7 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // FindUserByEmail returns a user scoped to a portal (account_type).
 func (r *Repository) FindUserByEmail(ctx context.Context, accountType, email string) (*UserRecord, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, account_type, coalesce(email,''), coalesce(phone,''), password_hash, full_name, status
+		SELECT id, account_type, coalesce(email,''), coalesce(phone,''), password_hash, full_name, status, block_reason
 		FROM users
 		WHERE account_type = $1 AND email = $2`,
 		accountType, email)
@@ -46,7 +47,7 @@ func (r *Repository) FindUserByEmail(ctx context.Context, accountType, email str
 // FindUserByID returns a user by id.
 func (r *Repository) FindUserByID(ctx context.Context, id string) (*UserRecord, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, account_type, coalesce(email,''), coalesce(phone,''), password_hash, full_name, status
+		SELECT id, account_type, coalesce(email,''), coalesce(phone,''), password_hash, full_name, status, block_reason
 		FROM users WHERE id = $1`, id)
 	return scanUser(row)
 }
@@ -63,7 +64,7 @@ func (r *Repository) EmailExists(ctx context.Context, accountType, email string)
 // FindUserByPhone returns a user scoped to a portal by phone number.
 func (r *Repository) FindUserByPhone(ctx context.Context, accountType, phone string) (*UserRecord, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, account_type, coalesce(email,''), coalesce(phone,''), password_hash, full_name, status
+		SELECT id, account_type, coalesce(email,''), coalesce(phone,''), password_hash, full_name, status, block_reason
 		FROM users
 		WHERE account_type = $1 AND phone = $2
 		ORDER BY created_at
@@ -252,7 +253,7 @@ func (r *Repository) Pool() *pgxpool.Pool { return r.pool }
 
 func scanUser(row pgx.Row) (*UserRecord, error) {
 	var u UserRecord
-	err := row.Scan(&u.ID, &u.AccountType, &u.Email, &u.Phone, &u.PasswordHash, &u.FullName, &u.Status)
+	err := row.Scan(&u.ID, &u.AccountType, &u.Email, &u.Phone, &u.PasswordHash, &u.FullName, &u.Status, &u.BlockReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

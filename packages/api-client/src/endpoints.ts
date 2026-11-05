@@ -1,8 +1,11 @@
 import type {
   ApiEnvelope, TokenPair, Gender, Category, Brand, Attribute, Product, ListingCard,
   CartItem, WishlistItem, Order, Seller, SellerOnboardingBundle, Collection, Banner,
-  TeamMember, Address, CustomerProfile, AppNotification, Settlement, AccountType,
-  OrderTracking, Coupon, CouponRedemption, ReturnRecord, SupportTicket,
+  TeamMember, Address, CustomerProfile, AppNotification, Settlement, SettlementSummary, SettlementGenerateResult, AccountType,
+  OrderTracking, Coupon, CouponRedemption, ReturnRecord, SupportTicket, SupportMessage, SellerSupportTicket,
+  AdminCustomer, AdminCustomerDetail, CustomerBlockReason,
+  AdminLoginResult, StaffMember, AdminRole, PermissionItem, AdminAccount,
+  ShipmentRow, ShipmentDetail, ShipmentSummary, ReadyOrder,
 } from '@carlitos/types'
 import { ApiClient } from './client'
 
@@ -20,8 +23,15 @@ export const authApi = (c: ApiClient) => ({
     c.post<TokenPair>('/auth/customer/login', { email, password }),
   loginSeller: (email: string, password: string) =>
     c.post<TokenPair>('/auth/seller/login', { email, password }),
+  // Returns a session, or `setup_required` for an invited employee who is still
+  // on their temporary password (no tokens are issued in that case).
   loginAdmin: (email: string, password: string) =>
-    c.post<TokenPair>('/auth/admin/login', { email, password }),
+    c.post<AdminLoginResult>('/auth/admin/login', { email, password }),
+  // Finish an invited employee's first sign-in: emailed code + new password.
+  adminSetupVerify: (setup_token: string, code: string, new_password: string) =>
+    c.post<TokenPair>('/auth/admin/setup/verify', { setup_token, code, new_password }),
+  adminSetupResend: (setup_token: string) =>
+    c.post<{ sent: boolean }>('/auth/admin/setup/resend', { setup_token }),
   registerCustomer: (body: { full_name: string; email: string; phone?: string; password: string }) =>
     c.post<TokenPair>('/auth/customer/register', body),
   registerSeller: (body: { owner_name: string; email: string; phone?: string; password: string; store_name: string }) =>
@@ -144,8 +154,8 @@ export const customerApi = (c: ApiClient) => ({
     order_item_id?: string
     photo_keys?: string[]
   }) => c.post<{ id: string }>('/customer/support/tickets', body),
-  replySupportTicket: (id: string, body: string) =>
-    c.post<void>(`/customer/support/tickets/${id}/messages`, { body }),
+  replySupportTicket: (id: string, body: string, image_key?: string) =>
+    c.post<SupportMessage>(`/customer/support/tickets/${id}/messages`, { body, image_key }),
 
   notifications: () => c.get<AppNotification[]>('/customer/notifications').then((r) => r ?? []),
 })
@@ -158,6 +168,9 @@ export const sellerApi = (c: ApiClient) => ({
   // Seller self-service: edit store description + notification prefs (store name
   // is server-locked once the store is approved/under review). Returns updated seller.
   updateProfile: (body: Record<string, unknown>) => c.put<Seller>('/seller/profile', body),
+  // Add business details that are still missing (GST, PAN, legal name, ...).
+  // The server never overwrites a value that is already on file.
+  fillBusiness: (body: Record<string, unknown>) => c.put<Seller>('/seller/profile/business', body),
   changePassword: (current_password: string, new_password: string) =>
     c.post<void>('/seller/change-password', { current_password, new_password }),
   onboarding: () => c.get<SellerOnboardingBundle>('/seller/onboarding'),
@@ -179,6 +192,9 @@ export const sellerApi = (c: ApiClient) => ({
   updateProduct: (id: string, body: Record<string, unknown>) => c.put<void>(`/seller/products/${id}`, body),
   setProductStock: (id: string, stock: number, sellerListingId?: string) =>
     c.patch<void>(`/seller/products/${id}/stock`, { stock, seller_listing_id: sellerListingId }),
+  // Add a brand-new size (with opening stock) to an existing product.
+  addProductSize: (id: string, size: string, quantity: number) =>
+    c.post<void>(`/seller/products/${id}/sizes`, { size, quantity }),
   submitProduct: (id: string) => c.post<void>(`/seller/products/${id}/submit`),
   // Upload an image file; returns the storage key + URL to attach to a product.
   uploadImage: (file: File) => c.uploadFile<{ key: string; url: string; size: number }>('/seller/uploads', file),
@@ -193,7 +209,13 @@ export const sellerApi = (c: ApiClient) => ({
   setItemStatus: (itemId: string, status: string) =>
     c.post<void>(`/seller/order-items/${itemId}/status`, { status }),
 
-  shipments: () => c.get<unknown[]>('/seller/shipments'),
+  shipments: () => c.get<ShipmentRow[]>('/seller/shipments').then((r) => r ?? []),
+  // Packed orders that still need a shipment (the seller's "Ready to ship" queue).
+  readyToShip: () => c.get<ReadyOrder[]>('/seller/shipments/ready').then((r) => r ?? []),
+  shipment: (id: string) => c.get<ShipmentDetail>(`/seller/shipments/${id}`),
+  cancelShipment: (id: string) => c.post<void>(`/seller/shipments/${id}/cancel`),
+  // Pull the courier's latest tracking and return the updated shipment.
+  refreshShipment: (id: string) => c.post<ShipmentDetail>(`/seller/shipments/${id}/refresh`),
   createShipment: (orderId: string) => c.post<unknown>(`/seller/orders/${orderId}/ship`),
   selfShip: (orderId: string) => c.post<unknown>(`/seller/orders/${orderId}/self-ship`),
   markShipped: (id: string) => c.post<void>(`/seller/shipments/${id}/mark-shipped`),
@@ -208,10 +230,21 @@ export const sellerApi = (c: ApiClient) => ({
 
   // Help & Support — seller handles only its own product tickets.
   supportTickets: () => c.get<SupportTicket[]>('/seller/support/tickets').then((r) => r ?? []),
-  replySupportTicket: (id: string, body: string) =>
-    c.post<void>(`/seller/support/tickets/${id}/messages`, { body }),
+  replySupportTicket: (id: string, body: string, image_key?: string) =>
+    c.post<SupportMessage>(`/seller/support/tickets/${id}/messages`, { body, image_key }),
   resolveSupportTicket: (id: string, resolution: string) =>
     c.post<void>(`/seller/support/tickets/${id}/resolve`, { resolution }),
+
+  // Seller → Admin support: the seller asks the CARLITOS team for help.
+  adminSupportTickets: () => c.get<SellerSupportTicket[]>('/seller/support/admin-tickets').then((r) => r ?? []),
+  openAdminSupportTicket: (body: {
+    category: string
+    subject?: string
+    description: string
+    photo_keys?: string[]
+  }) => c.post<{ id: string }>('/seller/support/admin-tickets', body),
+  replyAdminSupportTicket: (id: string, body: string, image_key?: string) =>
+    c.post<SupportMessage>(`/seller/support/admin-tickets/${id}/messages`, { body, image_key }),
 
   packagingItems: () => c.get<unknown[]>('/seller/packaging/items'),
   packagingBalances: () => c.get<unknown[]>('/seller/packaging/balances'),
@@ -220,12 +253,21 @@ export const sellerApi = (c: ApiClient) => ({
     c.post<{ id: string }>('/seller/packaging/requests', { packaging_item_id, quantity }),
 
   settlements: () => c.get<Settlement[]>('/seller/settlements'),
+  settlementSummary: () => c.get<SettlementSummary>('/seller/settlements/summary'),
 })
 
 // ---------------------------------------------------------------------
 // Admin (authenticated + permissioned)
 // ---------------------------------------------------------------------
 export const adminApi = (c: ApiClient) => ({
+  // Customers: list, details, block (with a reason) / unblock.
+  customers: (params?: Record<string, unknown>) => c.getWithMeta<AdminCustomer[]>('/admin/customers', params),
+  customer: (id: string) => c.get<AdminCustomerDetail>(`/admin/customers/${id}`),
+  customerBlockReasons: () => c.get<CustomerBlockReason[]>('/admin/customers/block-reasons').then((r) => r ?? []),
+  blockCustomer: (id: string, body: { reason_code: string; note?: string }) =>
+    c.post<void>(`/admin/customers/${id}/block`, body),
+  unblockCustomer: (id: string) => c.post<void>(`/admin/customers/${id}/unblock`),
+
   sellers: (params?: Record<string, unknown>) => c.getWithMeta<Seller[]>('/admin/sellers', params),
   seller: (id: string) => c.get<Seller>(`/admin/sellers/${id}`),
   approveSeller: (id: string) => c.post<void>(`/admin/sellers/${id}/approve`),
@@ -274,10 +316,18 @@ export const adminApi = (c: ApiClient) => ({
   // (seller) tickets with scope='all' (read-only; actions are rejected server-side).
   supportTickets: (params?: { scope?: 'all'; status?: string }) =>
     c.get<SupportTicket[]>('/admin/support/tickets', params as Record<string, unknown> | undefined).then((r) => r ?? []),
-  replySupportTicket: (id: string, body: string) =>
-    c.post<void>(`/admin/support/tickets/${id}/messages`, { body }),
+  replySupportTicket: (id: string, body: string, image_key?: string) =>
+    c.post<SupportMessage>(`/admin/support/tickets/${id}/messages`, { body, image_key }),
   resolveSupportTicket: (id: string, resolution: string) =>
     c.post<void>(`/admin/support/tickets/${id}/resolve`, { resolution }),
+
+  // Requests raised by sellers (seller → admin).
+  sellerSupportTickets: (params?: { status?: string }) =>
+    c.get<SellerSupportTicket[]>('/admin/support/seller-tickets', params as Record<string, unknown> | undefined).then((r) => r ?? []),
+  replySellerSupportTicket: (id: string, body: string) =>
+    c.post<SupportMessage>(`/admin/support/seller-tickets/${id}/messages`, { body }),
+  resolveSellerSupportTicket: (id: string, resolution: string) =>
+    c.post<void>(`/admin/support/seller-tickets/${id}/resolve`, { resolution }),
 
   reviews: (params?: Record<string, unknown>) => c.get<unknown[]>('/admin/reviews', params),
   moderateReview: (id: string, status: string) => c.post<void>(`/admin/reviews/${id}/moderate`, { status }),
@@ -290,7 +340,38 @@ export const adminApi = (c: ApiClient) => ({
 
   settlements: (params?: Record<string, unknown>) => c.get<Settlement[]>('/admin/settlements', params),
   generateSettlement: (seller_id: string) => c.post<{ id: string }>('/admin/settlements/generate', { seller_id }),
+  generateAllSettlements: () => c.post<SettlementGenerateResult[]>('/admin/settlements/generate-all', {}),
   auditLogs: () => c.get<unknown[]>('/admin/audit-logs'),
+
+  // ── Shipping (all sellers' shipments) ──────────────────────────────
+  shipments: (params?: Record<string, unknown>) => c.getWithMeta<ShipmentRow[]>('/admin/shipments', params),
+  shipmentsSummary: () => c.get<ShipmentSummary>('/admin/shipments/summary'),
+  shipment: (id: string) => c.get<ShipmentDetail>(`/admin/shipments/${id}`),
+  refreshShipment: (id: string) => c.post<ShipmentDetail>(`/admin/shipments/${id}/refresh`),
+
+  // ── Employees (staff), roles & own account ─────────────────────────
+  staff: () => c.get<StaffMember[]>('/admin/staff').then((r) => r ?? []),
+  inviteStaff: (body: { full_name: string; email: string; phone: string; role_id: string }) =>
+    c.post<{ employee: StaffMember; email_sent: boolean }>('/admin/staff/invite', body),
+  resendStaffInvite: (id: string) =>
+    c.post<{ employee: StaffMember; email_sent: boolean }>(`/admin/staff/${id}/resend`),
+  disableStaff: (id: string) => c.post<StaffMember>(`/admin/staff/${id}/disable`),
+  enableStaff: (id: string) => c.post<StaffMember>(`/admin/staff/${id}/enable`),
+  changeStaffRole: (id: string, role_id: string) => c.put<StaffMember>(`/admin/staff/${id}/role`, { role_id }),
+  cancelStaffInvite: (id: string) => c.del<void>(`/admin/staff/${id}`),
+
+  roles: () => c.get<AdminRole[]>('/admin/roles').then((r) => r ?? []),
+  permissions: () => c.get<PermissionItem[]>('/admin/permissions').then((r) => r ?? []),
+  createRole: (body: { name: string; description: string; permissions: string[] }) =>
+    c.post<AdminRole>('/admin/roles', body),
+  updateRole: (id: string, body: { name: string; description: string; permissions: string[] }) =>
+    c.put<AdminRole>(`/admin/roles/${id}`, body),
+  deleteRole: (id: string) => c.del<void>(`/admin/roles/${id}`),
+
+  account: () => c.get<AdminAccount>('/admin/account'),
+  updateAccount: (body: { full_name: string; phone: string }) => c.put<AdminAccount>('/admin/account', body),
+  changeAdminPassword: (current_password: string, new_password: string) =>
+    c.post<void>('/admin/account/change-password', { current_password, new_password }),
 })
 
 export type { ApiEnvelope }

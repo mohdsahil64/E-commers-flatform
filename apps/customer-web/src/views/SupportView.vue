@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, nextTick } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, nextTick } from 'vue'
 import {
   Package, CreditCard, LogIn, RotateCcw, HelpCircle, UserCog,
   Search, X, ImagePlus, Send, CheckCircle2, Clock, ChevronRight,
   MessageSquare, ArrowLeft, ShieldCheck, Store,
 } from 'lucide-vue-next'
-import type { Order, OrderItem, SupportTicket } from '@carlitos/types'
-import { customer, MEDIA_BASE } from '@/api'
-import { resolveMediaUrl, extractApiError } from '@carlitos/shared'
+import type { Order, OrderItem, SupportTicket, SupportMessage, SupportSocketEvent } from '@carlitos/types'
+import { customer, MEDIA_BASE, api, tokenStore } from '@/api'
+import { resolveMediaUrl, extractApiError, connectSupportSocket } from '@carlitos/shared'
 import { useToastStore } from '@/stores/toast'
 import { useSeo } from '@/composables/useSeo'
 import PageBack from '@/components/PageBack.vue'
@@ -218,6 +218,10 @@ const activeTicket = ref<SupportTicket | null>(null)
 const replyBody = ref('')
 const replying = ref(false)
 const timelineEl = ref<HTMLElement | null>(null)
+// Image attached to the reply being composed (proof photo sent in chat).
+const replyImageKey = ref('')
+const replyImagePreview = ref('')
+const uploadingReply = ref(false)
 
 async function loadTickets(silent = false) {
   if (!silent) loadingTickets.value = true
@@ -246,19 +250,79 @@ function scrollTimeline() {
   if (el) el.scrollTop = el.scrollHeight
 }
 
-async function sendReply() {
-  if (!activeTicket.value || !replyBody.value.trim()) return
-  replying.value = true
+async function onReplyImage(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  uploadingReply.value = true
   try {
-    await customer.replySupportTicket(activeTicket.value.id, replyBody.value.trim())
+    const res = await customer.uploadImage(file)
+    replyImageKey.value = res.key
+    replyImagePreview.value = res.url || resolveMediaUrl(MEDIA_BASE, res.key)
+  } catch (err) {
+    toast.error(extractApiError(err))
+  } finally {
+    uploadingReply.value = false
+    input.value = ''
+  }
+}
+
+function clearReplyImage() {
+  replyImageKey.value = ''
+  replyImagePreview.value = ''
+}
+
+const canSend = computed(
+  () => !replying.value && !uploadingReply.value && (!!replyBody.value.trim() || !!replyImageKey.value),
+)
+
+// Adds a message to every in-memory copy of the ticket (deduped by id).
+function applyMessage(ticketId: string, msg: SupportMessage, status?: SupportTicket['status']) {
+  const copies = new Set<SupportTicket>()
+  const inList = tickets.value.find((x) => x.id === ticketId)
+  if (inList) copies.add(inList)
+  if (activeTicket.value?.id === ticketId) copies.add(activeTicket.value)
+  for (const t of copies) {
+    if (!t.messages.some((m) => m.id === msg.id)) t.messages.push(msg)
+    if (status) t.status = status
+  }
+  if (activeTicket.value?.id === ticketId) nextTick(scrollTimeline)
+}
+
+async function sendReply() {
+  if (!activeTicket.value || !canSend.value) return
+  replying.value = true
+  const ticketId = activeTicket.value.id
+  try {
+    const msg = await customer.replySupportTicket(ticketId, replyBody.value.trim(), replyImageKey.value || undefined)
     replyBody.value = ''
-    await loadTickets(true)
-    nextTick(scrollTimeline)
+    clearReplyImage()
+    // Show instantly; the socket echo is deduped by id.
+    if (msg?.id) applyMessage(ticketId, msg)
   } catch (e) {
     toast.error(extractApiError(e))
   } finally {
     replying.value = false
   }
+}
+
+/* ── Live updates (WebSocket) ──────────────────────────────────── */
+let socket: { close: () => void } | null = null
+
+function handleSocketEvent(ev: SupportSocketEvent) {
+  if (ev.type === 'ticket_changed') {
+    loadTickets(true)
+    return
+  }
+  if (!ev.message) return
+  if (!tickets.value.some((t) => t.id === ev.ticket_id)) {
+    loadTickets(true)
+    return
+  }
+  applyMessage(ev.ticket_id, ev.message, ev.status)
+  // Heads-up when a reply lands on a chat that isn't currently open.
+  const viewing = pane.value === 'detail' && activeTicket.value?.id === ev.ticket_id
+  if (!viewing && ev.message.author_role !== 'customer') toast.info('New reply on your support request')
 }
 
 function switchPane(p: Pane) {
@@ -305,7 +369,18 @@ const openCount = computed(() => tickets.value.filter((t) => t.status !== 'solve
 onMounted(() => {
   // Prefetch tickets so the "My Requests" tab shows an accurate count.
   loadTickets(true)
+  socket = connectSupportSocket<SupportSocketEvent>({
+    baseURL: api.http.defaults.baseURL || '',
+    getToken: () => tokenStore.getAccess(),
+    onEvent: handleSocketEvent,
+    // After a dropped connection, resync anything missed while offline.
+    onOpen: (reconnected) => { if (reconnected) loadTickets(true) },
+    // Hitting an authenticated endpoint refreshes an expired access token.
+    beforeReconnect: async () => { await customer.supportTickets() },
+  })
 })
+
+onBeforeUnmount(() => socket?.close())
 </script>
 
 <template>
@@ -620,7 +695,22 @@ onMounted(() => {
                     ? 'rounded-bl-sm bg-stone-100 text-stone-500 text-xs italic'
                     : 'rounded-bl-sm bg-stone-100 text-ink')"
             >
-              {{ m.body }}
+              <a
+                v-if="m.image_key"
+                :href="resolveMediaUrl(MEDIA_BASE, m.image_key)"
+                target="_blank"
+                rel="noopener"
+                class="block"
+              >
+                <img
+                  :src="resolveMediaUrl(MEDIA_BASE, m.image_key)"
+                  alt="Shared photo"
+                  class="max-h-56 w-full rounded-lg object-cover"
+                  :class="m.body ? 'mb-1.5' : ''"
+                  loading="lazy"
+                />
+              </a>
+              <template v-if="m.body">{{ m.body }}</template>
             </div>
           </div>
         </div>
@@ -636,22 +726,45 @@ onMounted(() => {
       </div>
 
       <!-- Reply composer -->
-      <div v-else class="mt-3 flex items-end gap-2">
-        <textarea
-          v-model="replyBody"
-          class="textarea min-h-[46px] flex-1 py-2.5 text-sm"
-          rows="1"
-          placeholder="Write a reply…"
-          @keydown.enter.exact.prevent="sendReply"
-        />
-        <button
-          class="btn-primary h-[46px] w-[46px] shrink-0 !px-0"
-          :disabled="replying || !replyBody.trim()"
-          aria-label="Send reply"
-          @click="sendReply"
-        >
-          <Send :size="16" />
-        </button>
+      <div v-else class="mt-3">
+        <!-- Pending image preview -->
+        <div v-if="replyImagePreview" class="mb-2 inline-block">
+          <div class="relative h-16 w-16 overflow-hidden rounded-md border border-stone-200">
+            <img :src="replyImagePreview" alt="Photo to send" class="h-full w-full object-cover" />
+            <button
+              class="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
+              aria-label="Remove photo"
+              @click="clearReplyImage"
+            >
+              <X :size="12" />
+            </button>
+          </div>
+        </div>
+        <div class="flex items-end gap-2">
+          <label
+            class="flex h-[46px] w-[46px] shrink-0 cursor-pointer items-center justify-center rounded-lg border border-stone-200 text-stone-500 transition-colors hover:border-ink hover:text-ink"
+            :class="uploadingReply ? 'pointer-events-none opacity-60' : ''"
+            aria-label="Attach photo"
+          >
+            <ImagePlus :size="18" />
+            <input type="file" accept="image/*" class="hidden" :disabled="uploadingReply" @change="onReplyImage" />
+          </label>
+          <textarea
+            v-model="replyBody"
+            class="textarea min-h-[46px] flex-1 py-2.5 text-sm"
+            rows="1"
+            placeholder="Write a message…"
+            @keydown.enter.exact.prevent="sendReply"
+          />
+          <button
+            class="btn-primary h-[46px] w-[46px] shrink-0 !px-0"
+            :disabled="!canSend"
+            aria-label="Send message"
+            @click="sendReply"
+          >
+            <Send :size="16" />
+          </button>
+        </div>
       </div>
     </div>
   </div>
